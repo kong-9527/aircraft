@@ -1,0 +1,14 @@
+{
+  "ver": "1.1.50",
+  "importer": "prefab",
+  "imported": true,
+  "uuid": "fcf800fe-924c-4aa7-9e4b-36ce1c9e3e98",
+  "files": [
+    ".json"
+  ],
+  "subMetas": {},
+  "userData": {
+    "syncNodeName": "FillCell",
+    "persistent": true
+  }
+}
