@@ -23,56 +23,6 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 获取当前日期
-        const currentDate = new Date()
-        const currentDateStr = currentDate.toISOString().split('T')[0] // 格式：2025-01-01
-        
-        // 查询stats_ranking_ids表，获取当前赛季信息
-        const rankingIdsResult = await db.collection('stats_ranking_ids')
-            .where({
-                type: 2, // 季赛
-                start_date: db.command.lte(currentDateStr),
-                end_date: db.command.gte(currentDateStr)
-            })
-            .orderBy('start_date', 'desc')
-            .limit(1)
-            .get()
-        
-        if (rankingIdsResult.data.length === 0) {
-            return {
-                success: false,
-                errorCode: 'NO_CURRENT_SEASON',
-                message: '未找到当前赛季信息'
-            }
-        }
-        
-        const currentSeason = rankingIdsResult.data[0]
-        let targetSeason
-        
-        if (type === 1) {
-            // 查询本赛季
-            targetSeason = currentSeason
-        } else {
-            // 查询上个赛季
-            const lastSeasonResult = await db.collection('stats_ranking_ids')
-                .where({
-                    type: 2,
-                    _id: db.command.lt(currentSeason._id) // 使用_id而不是id
-                })
-                .orderBy('_id', 'desc')
-                .limit(1)
-                .get()
-            
-            if (lastSeasonResult.data.length === 0) {
-                return {
-                    success: false,
-                    errorCode: 'NO_PREVIOUS_SEASON',
-                    message: '未找到上个赛季信息，当前为第一个赛季'
-                }
-            }
-            targetSeason = lastSeasonResult.data[0]
-        }
-        
         // 查询用户信息
         const userResult = await db.collection('user')
             .where({
@@ -90,65 +40,177 @@ exports.main = async (event, context) => {
         
         const user = userResult.data[0]
         
-        // 查询榜单数据（前100名）
-        const rankingData = await db.collection('stats_ranking_season')
-            .where({
-                ranking_id: targetSeason._id // 使用_id
-            })
-            .orderBy('user_ranking', 'asc')
-            .limit(100)
-            .get()
-        
-        // 查询当前用户在该榜单的排名
-        const selfRankingResult = await db.collection('stats_ranking_season')
-            .where({
-                ranking_id: targetSeason._id, // 使用_id
-                user_id: user._id // 使用_id
-            })
-            .get()
-        
-        let selfUserData = null
-        if (selfRankingResult.data.length > 0) {
-            selfUserData = selfRankingResult.data[0]
-        }
-        
-        // 获取榜单中用户的详细信息
-        const userIds = rankingData.data.map(item => item.user_id)
-        const userInfos = await db.collection('user')
-            .where({
-                _id: db.command.in(userIds) // 使用_id
-            })
-            .get()
-        
-        const userInfoMap = {}
-        userInfos.data.forEach(userInfo => {
-            userInfoMap[userInfo._id] = userInfo // 使用_id作为key
-        })
-        
-        // 组装返回数据
-        const result = {
-            success: true,
-            ranking_id: targetSeason._id, // 使用_id
-            ranking_start_date: targetSeason.start_date,
-            ranking_end_date: targetSeason.end_date,
-            self_user_id: user._id, // 使用_id
-            self_user_nickname: user.nickname || '',
-            self_user_headurl: user.headurl || '',
-            self_user_score: selfUserData ? selfUserData.user_score : 0,
-            self_user_ranking: selfUserData ? selfUserData.user_ranking : 0,
-            data: rankingData.data.map(item => {
-                const userInfo = userInfoMap[item.user_id] || {}
+        if (type === 1) {
+            // 查询当前赛季 - 从user表做实时排名
+            const currentDate = new Date()
+            const currentDateStr = currentDate.toISOString().split('T')[0]
+            
+            // 查询stats_ranking_ids表，获取当前赛季信息
+            const rankingIdsResult = await db.collection('stats_ranking_ids')
+                .where({
+                    type: 2, // 季赛
+                    start_date: db.command.lte(currentDateStr),
+                    end_date: db.command.gte(currentDateStr)
+                })
+                .orderBy('start_date', 'desc')
+                .limit(1)
+                .get()
+            
+            if (rankingIdsResult.data.length === 0) {
                 return {
-                    user_id: item.user_id,
+                    success: false,
+                    errorCode: 'NO_CURRENT_SEASON',
+                    message: '未找到当前赛季信息'
+                }
+            }
+            
+            const currentSeason = rankingIdsResult.data[0]
+            
+            // 获取所有用户的score，按score倒序排序
+            const allUsersResult = await db.collection('user')
+                .orderBy('score', 'desc')
+                .get()
+            
+            // 计算当前用户的排名
+            let selfUserRanking = 0
+            for (let i = 0; i < allUsersResult.data.length; i++) {
+                if (allUsersResult.data[i]._id === user._id) {
+                    selfUserRanking = i + 1
+                    break
+                }
+            }
+            
+            // 取前100名作为榜单
+            const top100Users = allUsersResult.data.slice(0, 100)
+            
+            // 组装返回数据
+            const result = {
+                success: true,
+                ranking_id: currentSeason._id,
+                ranking_start_date: currentSeason.start_date,
+                ranking_end_date: currentSeason.end_date,
+                self_user_id: user._id,
+                self_user_nickname: user.nickname || '',
+                self_user_headurl: user.headurl || '',
+                self_user_score: user.score || 0,
+                self_user_ranking: selfUserRanking,
+                data: top100Users.map((userInfo, index) => ({
+                    user_id: userInfo._id,
                     user_nickname: userInfo.nickname || '',
                     user_headurl: userInfo.headurl || '',
-                    user_score: item.user_score,
-                    user_ranking: item.user_ranking
+                    user_score: userInfo.score || 0,
+                    user_ranking: index + 1
+                }))
+            }
+            
+            return result
+            
+        } else {
+            // 查询上个赛季 - 从stats_ranking_season表获取历史排名
+            const currentDate = new Date()
+            const currentDateStr = currentDate.toISOString().split('T')[0]
+            
+            // 查询stats_ranking_ids表，获取当前赛季信息
+            const rankingIdsResult = await db.collection('stats_ranking_ids')
+                .where({
+                    type: 2, // 季赛
+                    start_date: db.command.lte(currentDateStr),
+                    end_date: db.command.gte(currentDateStr)
+                })
+                .orderBy('start_date', 'desc')
+                .limit(1)
+                .get()
+            
+            if (rankingIdsResult.data.length === 0) {
+                return {
+                    success: false,
+                    errorCode: 'NO_CURRENT_SEASON',
+                    message: '未找到当前赛季信息'
                 }
+            }
+            
+            const currentSeason = rankingIdsResult.data[0]
+            
+            // 查询上个赛季
+            const lastSeasonResult = await db.collection('stats_ranking_ids')
+                .where({
+                    type: 2,
+                    _id: db.command.lt(currentSeason._id)
+                })
+                .orderBy('_id', 'desc')
+                .limit(1)
+                .get()
+            
+            if (lastSeasonResult.data.length === 0) {
+                return {
+                    success: false,
+                    errorCode: 'NO_PREVIOUS_SEASON',
+                    message: '未找到上个赛季信息，当前为第一个赛季'
+                }
+            }
+            
+            const targetSeason = lastSeasonResult.data[0]
+            
+            // 查询榜单数据（前100名）
+            const rankingData = await db.collection('stats_ranking_season')
+                .where({
+                    ranking_id: targetSeason._id
+                })
+                .orderBy('user_ranking', 'asc')
+                .limit(100)
+                .get()
+            
+            // 查询当前用户在该榜单的排名
+            const selfRankingResult = await db.collection('stats_ranking_season')
+                .where({
+                    ranking_id: targetSeason._id,
+                    user_id: user._id
+                })
+                .get()
+            
+            let selfUserData = null
+            if (selfRankingResult.data.length > 0) {
+                selfUserData = selfRankingResult.data[0]
+            }
+            
+            // 获取榜单中用户的详细信息
+            const userIds = rankingData.data.map(item => item.user_id)
+            const userInfos = await db.collection('user')
+                .where({
+                    _id: db.command.in(userIds)
+                })
+                .get()
+            
+            const userInfoMap = {}
+            userInfos.data.forEach(userInfo => {
+                userInfoMap[userInfo._id] = userInfo
             })
+            
+            // 组装返回数据
+            const result = {
+                success: true,
+                ranking_id: targetSeason._id,
+                ranking_start_date: targetSeason.start_date,
+                ranking_end_date: targetSeason.end_date,
+                self_user_id: user._id,
+                self_user_nickname: user.nickname || '',
+                self_user_headurl: user.headurl || '',
+                self_user_score: selfUserData ? selfUserData.user_score : 0,
+                self_user_ranking: selfUserData ? selfUserData.user_ranking : 0,
+                data: rankingData.data.map(item => {
+                    const userInfo = userInfoMap[item.user_id] || {}
+                    return {
+                        user_id: item.user_id,
+                        user_nickname: userInfo.nickname || '',
+                        user_headurl: userInfo.headurl || '',
+                        user_score: item.user_score,
+                        user_ranking: item.user_ranking
+                    }
+                })
+            }
+            
+            return result
         }
-        
-        return result
         
     } catch (error) {
         console.error('季赛榜单查询失败:', error)
