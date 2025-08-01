@@ -93,6 +93,9 @@
       },
       {
         "__id__": 33
+      },
+      {
+        "__id__": 44
       }
     ],
     "_prefab": null,
@@ -1119,5 +1122,21 @@
   {
     "__type__": "cc.PostSettingsInfo",
     "_toneMappingType": 0
+  },
+  {
+    "__type__": "cc.Script",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 2
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "_script": {
+      "__uuid__": "run-scene-controller-uuid",
+      "__expectedType__": "cc.Script"
+    },
+    "_id": "run-scene-controller-id"
   }
 ]

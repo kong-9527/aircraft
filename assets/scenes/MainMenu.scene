@@ -112,6 +112,9 @@
       },
       {
         "__id__": 75
+      },
+      {
+        "__id__": 85
       }
     ],
     "_prefab": null,
@@ -404,7 +407,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 320,
+      "width": 240,
       "height": 100.8
     },
     "_anchorPoint": {
@@ -437,8 +440,8 @@
     "_string": "人机挑战",
     "_horizontalAlign": 1,
     "_verticalAlign": 1,
-    "_actualFontSize": 80,
-    "_fontSize": 80,
+    "_actualFontSize": 60,
+    "_fontSize": 60,
     "_fontFamily": "Arial",
     "_lineHeight": 80,
     "_overflow": 0,
@@ -536,7 +539,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 368.984375,
+      "width": 276.73828125,
       "height": 100.8
     },
     "_anchorPoint": {
@@ -569,8 +572,8 @@
     "_string": "1v1排位赛",
     "_horizontalAlign": 1,
     "_verticalAlign": 1,
-    "_actualFontSize": 80,
-    "_fontSize": 80,
+    "_actualFontSize": 60,
+    "_fontSize": 60,
     "_fontFamily": "Arial",
     "_lineHeight": 80,
     "_overflow": 0,
@@ -668,7 +671,7 @@
     "__prefab": null,
     "_contentSize": {
       "__type__": "cc.Size",
-      "width": 480,
+      "width": 360,
       "height": 100.8
     },
     "_anchorPoint": {
@@ -701,8 +704,8 @@
     "_string": "邀请好友对战",
     "_horizontalAlign": 1,
     "_verticalAlign": 1,
-    "_actualFontSize": 80,
-    "_fontSize": 80,
+    "_actualFontSize": 60,
+    "_fontSize": 60,
     "_fontFamily": "Arial",
     "_lineHeight": 80,
     "_overflow": 0,
@@ -3188,5 +3191,21 @@
   {
     "__type__": "cc.PostSettingsInfo",
     "_toneMappingType": 0
+  },
+  {
+    "__type__": "cc.Script",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 2
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "_script": {
+      "__uuid__": "main-menu-controller-uuid",
+      "__expectedType__": "cc.Script"
+    },
+    "_id": "main-menu-controller-id"
   }
 ]
