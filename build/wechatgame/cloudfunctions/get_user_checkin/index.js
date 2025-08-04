@@ -73,6 +73,28 @@ async function getUserCheckinRecords(userId, checkinIds) {
     return userCheckinResult.data
 }
 
+// 获取物品信息（包括图标URL）
+async function getItemInfo(itemIds) {
+    if (itemIds.length === 0) {
+        return {}
+    }
+    
+    const db = cloud.database()
+    const itemResult = await db.collection('base_items')
+        .where({
+            id: db.command.in(itemIds)
+        })
+        .get()
+    
+    // 创建物品信息映射
+    const itemMap = {}
+    itemResult.data.forEach(item => {
+        itemMap[item.id] = item
+    })
+    
+    return itemMap
+}
+
 // 判断是否允许补签
 function canRecheckin(dateStr, isCollected, yesterdayDate) {
     // 如果已经签到，不能补签
@@ -132,6 +154,12 @@ exports.main = async (event, context) => {
             checkinRecordMap[record.checkin_id] = record
         })
         
+        // 获取所有物品ID
+        const itemIds = [...new Set(checkinConfigs.map(config => config.reward_item_id))]
+        
+        // 获取物品信息（包括图标URL）
+        const itemMap = await getItemInfo(itemIds)
+        
         // 组装返回数据
         const resultData = checkinConfigs.map(config => {
             const date = new Date(config.date)
@@ -142,12 +170,16 @@ exports.main = async (event, context) => {
             const isCollected = userRecord ? userRecord.is_collected === 1 : false
             const isRecheckin = canRecheckin(dateStr, isCollected, yesterdayDate)
             
+            // 获取物品信息
+            const itemInfo = itemMap[config.reward_item_id] || {}
+            
             return {
                 date: dateStr,
                 week: week,
                 item_id: config.reward_item_id,
-                item_name: config.reward_item_name || `物品${config.reward_item_id}`, // 假设有物品名称字段，如果没有则使用默认值
+                item_name: itemInfo.name || config.reward_item_name || `物品${config.reward_item_id}`,
                 item_num: config.reward_item_num,
+                icon_url: itemInfo.icon_url || '', // 添加图标URL
                 is_collected: isCollected,
                 is_recheckin: isRecheckin
             }
