@@ -49,7 +49,21 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 2. 查询该日期的签到奖励配置
+        // 2. 检查是否是补签，如果是补签则验证是否允许
+        if (submitDateOnly.getTime() === yesterday.getTime()) {
+            // 检查今天是否是某月第一天
+            const todayMonth = today.getMonth() + 1 // getMonth()返回0-11，所以+1
+            const todayDate = today.getDate()
+            
+            if (todayDate === 1) {
+                return {
+                    success: false,
+                    message: '无法补签上个月的签到'
+                }
+            }
+        }
+        
+        // 3. 查询该日期的签到奖励配置
         const checkinResult = await db.collection('basic_checkins')
             .where({
                 date: submitDateOnly
@@ -66,7 +80,7 @@ exports.main = async (event, context) => {
         const checkinConfig = checkinResult.data[0]
         const { reward_item_id, reward_item_num } = checkinConfig
         
-        // 3. 检查用户是否已经领取过该日期的奖励
+        // 4. 检查用户是否已经领取过该日期的奖励
         const userCheckinResult = await db.collection('user_checkin')
             .where({
                 user_id: openid,
@@ -84,7 +98,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 4. 更新用户物品数量
+        // 5. 更新用户物品数量
         const userItemResult = await db.collection('user_item')
             .where({
                 user_id: openid,
@@ -118,7 +132,7 @@ exports.main = async (event, context) => {
                 })
         }
         
-        // 5. 标记该日期的奖励已领取
+        // 6. 标记该日期的奖励已领取
         if (userCheckinResult.data.length === 0) {
             // 创建新记录
             await db.collection('user_checkin').add({
@@ -144,7 +158,7 @@ exports.main = async (event, context) => {
                 })
         }
         
-        // 6. 调用submit_item_order接口记录日志
+        // 7. 调用submit_item_order接口记录日志
         try {
             const result = await cloud.callFunction({
                 name: 'submit_item_order',
