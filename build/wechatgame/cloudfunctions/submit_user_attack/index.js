@@ -66,7 +66,26 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 4. 查询飞机组合信息
+        // 4. 检查item_id=3道具使用逻辑
+        if (attackedSquares.length >= 2) {
+            const currentPlayer = room.players.find(p => p.openid === currentPlayerOpenid)
+            if (currentPlayer && currentPlayer.items) {
+                // 检查是否已经使用了item_id=3的道具
+                const hasItem3 = currentPlayer.items.some(item => item.item_id === '3')
+                if (hasItem3) {
+                    return {
+                        success: false,
+                        message: '一种科技在一句战斗中只能使用一次',
+                        data: null
+                    }
+                }
+                
+                // 如果没有使用过item_id=3，则添加该道具记录
+                await addItem3ToPlayer(db, room_id, currentPlayerOpenid)
+            }
+        }
+        
+        // 5. 查询飞机组合信息
         const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(room.group_id).get()
         if (!groupResult.data) {
             return {
@@ -95,7 +114,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 5. 处理攻击逻辑（包含道具功能和奖励事件记录）
+        // 6. 处理攻击逻辑（包含道具功能和奖励事件记录）
         let hasHeadHit = false
         const updatedChessBoard = { ...chessBoard }
         
@@ -221,7 +240,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 6. 统计机头数量
+        // 7. 统计机头数量
         let headCount = 0
         for (let i = 1; i <= 144; i++) {
             const squareKey = `chess_${i}`
@@ -230,7 +249,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 7. 判断胜负和更新游戏状态
+        // 8. 判断胜负和更新游戏状态
         const currentTime = Date.now()
         let winner = null
         let gameEnded = false
@@ -241,7 +260,7 @@ exports.main = async (event, context) => {
             gameEnded = true
         }
         
-        // 8. 更新房间状态
+        // 9. 更新房间状态
         const updateData = {
             chess_board: updatedChessBoard,
             last_move_time: currentTime
@@ -263,7 +282,7 @@ exports.main = async (event, context) => {
             data: updateData
         })
         
-        // 9. 处理AI攻击
+        // 10. 处理AI攻击
         if (!gameEnded) {
             const nextPlayer = room.players.find(p => p.openid === updateData.current_player)
             if (nextPlayer && nextPlayer.type === 2) {
@@ -287,7 +306,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 10. 结算奖励
+        // 11. 结算奖励
         if (gameEnded && winner) {
             const winnerPlayer = room.players.find(p => p.openid === winner)
             const loserPlayer = room.players.find(p => p.openid !== winner)
@@ -301,10 +320,10 @@ exports.main = async (event, context) => {
                 })
             }
             
-            // 11. 计算额外奖励
+            // 12. 计算额外奖励
             await calculateExtraRewards(db, room, winner, loserPlayer)
             
-            // 12. 计算用户成就
+            // 13. 计算用户成就
             await calculateUserAchievements(db, room, winner, currentPlayerOpenid)
         }
         
@@ -609,6 +628,47 @@ async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
         
     } catch (error) {
         console.error('标记道具为已使用时出错:', error)
+    }
+}
+
+// 为玩家添加item_id=3道具的辅助函数
+async function addItem3ToPlayer(db, roomId, playerOpenid) {
+    try {
+        // 更新房间中指定玩家，添加item_id=3的道具
+        const roomResult = await db.collection('rooms').doc(roomId).get()
+        if (!roomResult.data) {
+            console.error('房间不存在')
+            return
+        }
+        
+        const room = roomResult.data
+        const players = room.players || []
+        
+        // 找到指定玩家并添加item_id=3道具
+        for (let i = 0; i < players.length; i++) {
+            if (players[i].openid === playerOpenid) {
+                if (!players[i].items) {
+                    players[i].items = []
+                }
+                
+                // 添加item_id=3道具，状态为已使用
+                players[i].items.push({
+                    item_id: "3",
+                    item_status: "1"
+                })
+                break
+            }
+        }
+        
+        // 更新房间数据
+        await db.collection('rooms').doc(roomId).update({
+            data: {
+                players: players
+            }
+        })
+        
+    } catch (error) {
+        console.error('添加item_id=3道具时出错:', error)
     }
 }
 
