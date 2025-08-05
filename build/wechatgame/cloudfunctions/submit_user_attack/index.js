@@ -434,6 +434,44 @@ async function calculateUserAchievements(db, room, winner, currentPlayerOpenid) 
             }
         }
         
+        // 11. 累积使用道具的成就 (achievement_id: 40,41,42) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const usedItemsCount = countUsedItems(winnerPlayer.items || [])
+            await updateAchievement(db, winner, [40, 41, 42], usedItemsCount)
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            const usedItemsCount = countUsedItems(loserPlayer.items || [])
+            await updateAchievement(db, loserPlayer.openid, [40, 41, 42], usedItemsCount)
+        }
+        
+        // 12. 闪避时是机头闪避的成就 (achievement_id: 64,65,66) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const headDodgeCount = countPlayerEvents(room.head_dodge_events || [], winner)
+            await updateAchievement(db, winner, [64, 65, 66], headDodgeCount)
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            const headDodgeCount = countPlayerEvents(room.head_dodge_events || [], loserPlayer.openid)
+            await updateAchievement(db, loserPlayer.openid, [64, 65, 66], headDodgeCount)
+        }
+        
+        // 13. 一击必杀成就 (achievement_id: 67,68,69) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const oneHitKillCount = countPlayerEvents(room.one_hit_kill_events || [], winner)
+            await updateAchievement(db, winner, [67, 68, 69], oneHitKillCount)
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            const oneHitKillCount = countPlayerEvents(room.one_hit_kill_events || [], loserPlayer.openid)
+            await updateAchievement(db, loserPlayer.openid, [67, 68, 69], oneHitKillCount)
+        }
+        
+        // 14. 不使用任何道具得胜的成就 (achievement_id: 75,76,77) - 仅对type=1的玩家，仅计算winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const hasNoItems = !winnerPlayer.items || winnerPlayer.items.length === 0
+            if (hasNoItems) {
+                await updateAchievement(db, winner, [75, 76, 77], 1)
+            }
+        }
+        
     } catch (error) {
         console.error('计算用户成就时出错:', error)
     }
@@ -840,4 +878,28 @@ function isPlaneIntact(chessBoard, headSquare, bodySquaresStr) {
     }
     
     return true
+}
+
+// 统计已使用的道具数量
+function countUsedItems(items) {
+    if (!items || !Array.isArray(items)) return 0
+    
+    return items.filter(item => item.item_status === '1').length
+}
+
+// 统计玩家在事件数组中的出现次数
+function countPlayerEvents(events, playerOpenid) {
+    if (!events || !Array.isArray(events)) return 0
+    
+    return events.filter(event => {
+        // 检查head_dodge_events
+        if (event.player_openid === playerOpenid) {
+            return true
+        }
+        // 检查one_hit_kill_events
+        if (event.attacker_openid === playerOpenid) {
+            return true
+        }
+        return false
+    }).length
 }
