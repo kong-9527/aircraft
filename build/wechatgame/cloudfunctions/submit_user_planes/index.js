@@ -10,15 +10,7 @@ exports.main = async (event, context) => {
     
     try {
         // 获取参数
-        const { mode, plane_type, data } = event
-        
-        // 参数验证
-        if (!mode || ![1, 2, 3].includes(mode)) {
-            return {
-                success: false,
-                message: 'mode参数错误，必须是1、2或3'
-            }
-        }
+        const { plane_type, data } = event
         
         if (!plane_type || plane_type !== 1) {
             return {

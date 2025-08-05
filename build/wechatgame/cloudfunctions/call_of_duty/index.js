@@ -42,6 +42,14 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
     
     const room = roomResult.data
     
+    // 检查房间mode是否为2，如果不是则返回错误
+    if (room.mode !== 2) {
+        return {
+            code: 400,
+            message: "只支持mode=2的对战模式"
+        }
+    }
+    
     // 如果房间已满2人或状态不是waiting，直接返回成功
     if (room.players && room.players.length >= 2 || room.status !== 'waiting') {
         return {
@@ -71,6 +79,14 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
         // 再次检查房间状态
         const finalRoomResult = await db.collection('battle_rooms').doc(roomId).get()
         const finalRoom = finalRoomResult.data
+        
+        // 检查房间mode是否为2
+        if (finalRoom.mode !== 2) {
+            return {
+                code: 400,
+                message: "只支持mode=2的对战模式"
+            }
+        }
         
         // 如果房间已满2人或状态不是waiting，说明有其他玩家或AI已经加入，返回成功
         if (finalRoom.players && finalRoom.players.length >= 2 || finalRoom.status !== 'waiting') {
@@ -108,6 +124,14 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
     // 4. 在更新数据库前再次检查房间状态
     const currentRoomResult = await db.collection('battle_rooms').doc(roomId).get()
     const currentRoom = currentRoomResult.data
+    
+    // 检查房间mode是否为2
+    if (currentRoom.mode !== 2) {
+        return {
+            code: 400,
+            message: "只支持mode=2的对战模式"
+        }
+    }
     
     // 如果房间状态已改变（不再是waiting或人数不再是1人），返回成功
     if (currentRoom.status !== 'waiting' || 
