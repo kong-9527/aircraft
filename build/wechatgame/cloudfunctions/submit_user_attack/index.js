@@ -86,31 +86,110 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 5. 处理攻击逻辑
+        // 5. 处理攻击逻辑（包含道具功能）
         let hasHeadHit = false
         const updatedChessBoard = { ...chessBoard }
         
+        // 获取被攻击玩家的信息
+        const attackedPlayer = players.find(p => p.openid !== currentPlayerOpenid)
+        const attackerPlayer = players.find(p => p.openid === currentPlayerOpenid)
+        
+        // 检查是否是被攻击方首次被击中
+        let isFirstHit = false
+        let hasHitInThisAttack = false
+        const squaresToMarkAsHit = []
+        
+        // 先检查本次攻击是否有击中
         for (const square of attackedSquares) {
             const squareKey = `chess_${square}`
             const currentStatus = updatedChessBoard[squareKey] || '0'
             
-            // 如果之前是9（闪避），本次视为击中
-            if (currentStatus === '9') {
-                if (headSquares.includes(square.toString())) {
-                    updatedChessBoard[squareKey] = '1'
-                    hasHeadHit = true
-                } else if (bodySquares.includes(square.toString())) {
-                    updatedChessBoard[squareKey] = '2'
+            if (currentStatus === '0') {
+                if (headSquares.includes(square.toString()) || bodySquares.includes(square.toString())) {
+                    hasHitInThisAttack = true
+                    squaresToMarkAsHit.push(square)
                 }
-            } else {
-                // 正常攻击
-                if (headSquares.includes(square.toString())) {
-                    updatedChessBoard[squareKey] = '1'
-                    hasHeadHit = true
-                } else if (bodySquares.includes(square.toString())) {
-                    updatedChessBoard[squareKey] = '2'
+            }
+        }
+        
+        // 检查是否是被攻击方首次被击中
+        if (hasHitInThisAttack && attackedPlayer) {
+            let hasAnyPreviousHit = false
+            for (let i = 1; i <= 144; i++) {
+                const squareKey = `chess_${i}`
+                const status = updatedChessBoard[squareKey] || '0'
+                if (status === '1' || status === '2') {
+                    hasAnyPreviousHit = true
+                    break
+                }
+            }
+            isFirstHit = !hasAnyPreviousHit
+        }
+        
+        // 检查是否攻击了已标记为9的格子
+        let hasAttackedMarkedNine = false
+        for (const square of attackedSquares) {
+            const squareKey = `chess_${square}`
+            const currentStatus = updatedChessBoard[squareKey] || '0'
+            if (currentStatus === '9') {
+                hasAttackedMarkedNine = true
+                break
+            }
+        }
+        
+        // 处理道具逻辑
+        let usedItem = false
+        if (attackedPlayer && attackedPlayer.items && hasHitInThisAttack && !hasAttackedMarkedNine) {
+            const availableItems = attackedPlayer.items.filter(item => item.item_status === '0')
+            const item1 = availableItems.find(item => item.item_id === '1')
+            const item2 = availableItems.find(item => item.item_id === '2')
+            
+            // 优先使用item_id=1的道具（首次被击中时）
+            if (isFirstHit && item1) {
+                usedItem = true
+                // 标记道具为已使用
+                await markItemAsUsed(db, room_id, attackedPlayer.openid, '1')
+                // 将所有应该被标记为1或2的格子标记为9
+                for (const square of squaresToMarkAsHit) {
+                    const squareKey = `chess_${square}`
+                    updatedChessBoard[squareKey] = '9'
+                }
+            } else if (item2) {
+                usedItem = true
+                // 标记道具为已使用
+                await markItemAsUsed(db, room_id, attackedPlayer.openid, '2')
+                // 将所有应该被标记为1或2的格子标记为9
+                for (const square of squaresToMarkAsHit) {
+                    const squareKey = `chess_${square}`
+                    updatedChessBoard[squareKey] = '9'
+                }
+            }
+        }
+        
+        // 如果没有使用道具，按正常逻辑处理攻击
+        if (!usedItem) {
+            for (const square of attackedSquares) {
+                const squareKey = `chess_${square}`
+                const currentStatus = updatedChessBoard[squareKey] || '0'
+                
+                // 如果之前是9（闪避），本次视为击中
+                if (currentStatus === '9') {
+                    if (headSquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '1'
+                        hasHeadHit = true
+                    } else if (bodySquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '2'
+                    }
                 } else {
-                    updatedChessBoard[squareKey] = '3' // 打空了
+                    // 正常攻击
+                    if (headSquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '1'
+                        hasHeadHit = true
+                    } else if (bodySquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '2'
+                    } else {
+                        updatedChessBoard[squareKey] = '3' // 打空了
+                    }
                 }
             }
         }
@@ -461,4 +540,42 @@ function hasAnyHit(chessBoard) {
         }
     }
     return false
+}
+
+// 标记道具为已使用的辅助函数
+async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
+    try {
+        // 更新房间中指定玩家的指定道具状态
+        const roomResult = await db.collection('rooms').doc(roomId).get()
+        if (!roomResult.data) {
+            console.error('房间不存在')
+            return
+        }
+        
+        const room = roomResult.data
+        const players = room.players || []
+        
+        // 找到指定玩家并更新其道具状态
+        for (let i = 0; i < players.length; i++) {
+            if (players[i].openid === playerOpenid && players[i].items) {
+                for (let j = 0; j < players[i].items.length; j++) {
+                    if (players[i].items[j].item_id === itemId) {
+                        players[i].items[j].item_status = '1'
+                        break
+                    }
+                }
+                break
+            }
+        }
+        
+        // 更新房间数据
+        await db.collection('rooms').doc(roomId).update({
+            data: {
+                players: players
+            }
+        })
+        
+    } catch (error) {
+        console.error('标记道具为已使用时出错:', error)
+    }
 }
