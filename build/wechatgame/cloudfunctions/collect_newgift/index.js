@@ -137,26 +137,36 @@ exports.main = async (event, context) => {
             })
         }
         
-        // 6. 调用submit_item_order接口记录日志
-        for (const item of updatedItems) {
-            try {
-                // 调用submit_item_order云函数
-                const result = await cloud.callFunction({
-                    name: 'submit_item_order',
-                    data: {
-                        item_id: item.item_id,
-                        item_num: item.item_num,
-                        type: 3,
-                        currency: '',
-                        cost: ''
-                    }
-                })
+        // 6. 直接记录日志到user_item_log表
+        try {
+            // 获取用户ID
+            const userResult = await db.collection('users').where({
+                openid: openid
+            }).get()
+            
+            if (userResult.data.length > 0) {
+                const userId = userResult.data[0].id
+                const currentTime = Math.floor(Date.now() / 1000)
                 
-                console.log('submit_item_order调用结果:', result)
-            } catch (error) {
-                console.error('调用submit_item_order失败:', error)
-                // 这里不返回错误，因为主要功能已经完成
+                // 为每个奖励物品记录日志
+                for (const item of updatedItems) {
+                    await db.collection('user_item_log').add({
+                        data: {
+                            user_id: userId,
+                            item_id: item.item_id,
+                            item_num: item.item_num,
+                            type: 1, // 增加
+                            type_content: '3领取奖励',
+                            ctime: currentTime
+                        }
+                    })
+                }
+                
+                console.log('新人礼奖励日志记录成功')
             }
+        } catch (error) {
+            console.error('记录新人礼奖励日志失败:', error)
+            // 这里不返回错误，因为主要功能已经完成
         }
         
         return {

@@ -158,22 +158,33 @@ exports.main = async (event, context) => {
                 })
         }
         
-        // 7. 调用submit_item_order接口记录日志
+        // 7. 直接记录日志到user_item_log表
         try {
-            const result = await cloud.callFunction({
-                name: 'submit_item_order',
-                data: {
-                    item_id: reward_item_id,
-                    item_num: reward_item_num,
-                    type: 3,
-                    currency: '',
-                    cost: ''
-                }
-            })
+            // 获取用户ID
+            const userResult = await db.collection('users').where({
+                openid: openid
+            }).get()
             
-            console.log('submit_item_order调用结果:', result)
+            if (userResult.data.length > 0) {
+                const userId = userResult.data[0].id
+                const currentTime = Math.floor(Date.now() / 1000)
+                
+                // 直接插入日志记录
+                await db.collection('user_item_log').add({
+                    data: {
+                        user_id: userId,
+                        item_id: reward_item_id,
+                        item_num: reward_item_num,
+                        type: 1, // 增加
+                        type_content: '3领取奖励',
+                        ctime: currentTime
+                    }
+                })
+                
+                console.log('签到奖励日志记录成功')
+            }
         } catch (error) {
-            console.error('调用submit_item_order失败:', error)
+            console.error('记录签到奖励日志失败:', error)
             // 这里不返回错误，因为主要功能已经完成
         }
         
