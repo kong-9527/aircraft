@@ -10,7 +10,7 @@ exports.main = async (event, context) => {
     
     try {
         // 获取参数
-        const { plane_type, data } = event
+        const { plane_type, data, mode } = event
         
         if (!plane_type || plane_type !== 1) {
             return {
@@ -23,6 +23,21 @@ exports.main = async (event, context) => {
             return {
                 success: false,
                 message: 'data参数错误，必须是包含3架飞机信息的数组'
+            }
+        }
+        
+        if (!mode || ![1, 2, 3].includes(mode)) {
+            return {
+                success: false,
+                message: 'mode参数错误，必须是1、2或3'
+            }
+        }
+        
+        // 当前逻辑只支持mode=2
+        if (mode !== 2) {
+            return {
+                success: false,
+                message: '当前只支持mode=2的游戏模式'
             }
         }
         
