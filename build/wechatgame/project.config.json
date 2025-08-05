@@ -29,7 +29,7 @@
     }
   },
   "compileType": "game",
-  "libVersion": "latest",
+  "libVersion": "3.9.0",
   "appid": "wx7d0867351d7d0541",
   "projectname": "aircraft",
   "condition": {
@@ -58,6 +58,6 @@
   },
   "isGameTourist": false,
   "editorSetting": {},
-  "cloudfunctionRoot": "./cloudfunctions/",
+  "cloudfunctionRoot": "cloudfunctions/",
   "cloudfunctionTe  mplateRoot": "cloudfunctionTemplate/"
 }
