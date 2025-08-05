@@ -41,6 +41,15 @@ exports.main = async (event, context) => {
         const room = roomResult.data
         const currentPlayerOpenid = wxContext.OPENID
         
+        // 检查房间模式，只有mode=2时才执行当前逻辑
+        if (room.mode !== 2) {
+            return {
+                success: false,
+                message: '不支持的房间模式',
+                data: null
+            }
+        }
+        
         // 3. 检查格子状态
         const chessBoard = room.chess_board || {}
         const attackedSquares = data.map(item => item.square)
