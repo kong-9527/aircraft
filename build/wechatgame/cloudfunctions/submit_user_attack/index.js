@@ -86,7 +86,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 5. 处理攻击逻辑（包含道具功能）
+        // 5. 处理攻击逻辑（包含道具功能和奖励事件记录）
         let hasHeadHit = false
         const updatedChessBoard = { ...chessBoard }
         
@@ -139,6 +139,7 @@ exports.main = async (event, context) => {
         
         // 处理道具逻辑
         let usedItem = false
+        let headDodgeEvent = false // 记录机头闪避事件
         if (attackedPlayer && attackedPlayer.items && hasHitInThisAttack && !hasAttackedMarkedNine) {
             const availableItems = attackedPlayer.items.filter(item => item.item_status === '0')
             const item1 = availableItems.find(item => item.item_id === '1')
@@ -153,6 +154,10 @@ exports.main = async (event, context) => {
                 for (const square of squaresToMarkAsHit) {
                     const squareKey = `chess_${square}`
                     updatedChessBoard[squareKey] = '9'
+                    // 检查是否是机头闪避
+                    if (headSquares.includes(square.toString())) {
+                        headDodgeEvent = true
+                    }
                 }
             } else if (item2) {
                 usedItem = true
@@ -162,8 +167,17 @@ exports.main = async (event, context) => {
                 for (const square of squaresToMarkAsHit) {
                     const squareKey = `chess_${square}`
                     updatedChessBoard[squareKey] = '9'
+                    // 检查是否是机头闪避
+                    if (headSquares.includes(square.toString())) {
+                        headDodgeEvent = true
+                    }
                 }
             }
+        }
+        
+        // 记录机头闪避事件
+        if (headDodgeEvent && attackedPlayer && attackedPlayer.type === 1) {
+            await recordHeadDodgeEvent(db, room_id, attackedPlayer.openid)
         }
         
         // 如果没有使用道具，按正常逻辑处理攻击
@@ -177,6 +191,8 @@ exports.main = async (event, context) => {
                     if (headSquares.includes(square.toString())) {
                         updatedChessBoard[squareKey] = '1'
                         hasHeadHit = true
+                        // 检查是否是一击必杀
+                        await checkOneHitKill(db, room_id, currentPlayerOpenid, square, group)
                     } else if (bodySquares.includes(square.toString())) {
                         updatedChessBoard[squareKey] = '2'
                     }
@@ -185,6 +201,8 @@ exports.main = async (event, context) => {
                     if (headSquares.includes(square.toString())) {
                         updatedChessBoard[squareKey] = '1'
                         hasHeadHit = true
+                        // 检查是否是一击必杀
+                        await checkOneHitKill(db, room_id, currentPlayerOpenid, square, group)
                     } else if (bodySquares.includes(square.toString())) {
                         updatedChessBoard[squareKey] = '2'
                     } else {
@@ -263,8 +281,10 @@ exports.main = async (event, context) => {
         // 10. 结算奖励
         if (gameEnded && winner) {
             const winnerPlayer = room.players.find(p => p.openid === winner)
+            const loserPlayer = room.players.find(p => p.openid !== winner)
+            
+            // 基础获胜奖励
             if (winnerPlayer && winnerPlayer.type === 1) {
-                // 给获胜玩家加分
                 await db.collection('users').doc(winner).update({
                     data: {
                         score: db.command.inc(100)
@@ -272,7 +292,10 @@ exports.main = async (event, context) => {
                 })
             }
             
-            // 11. 计算用户成就
+            // 11. 计算额外奖励
+            await calculateExtraRewards(db, room, winner, loserPlayer)
+            
+            // 12. 计算用户成就
             await calculateUserAchievements(db, room, winner, currentPlayerOpenid)
         }
         
@@ -578,4 +601,174 @@ async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
     } catch (error) {
         console.error('标记道具为已使用时出错:', error)
     }
+}
+
+// 记录机头闪避事件
+async function recordHeadDodgeEvent(db, roomId, playerOpenid) {
+    try {
+        // 在房间中记录机头闪避事件
+        await db.collection('rooms').doc(roomId).update({
+            data: {
+                head_dodge_events: db.command.push({
+                    player_openid: playerOpenid,
+                    timestamp: Date.now()
+                })
+            }
+        })
+    } catch (error) {
+        console.error('记录机头闪避事件时出错:', error)
+    }
+}
+
+// 检查一击必杀事件
+async function checkOneHitKill(db, roomId, attackerOpenid, headSquare, group) {
+    try {
+        // 确定击中的是哪个机头
+        let headType = null
+        let bodySquares = []
+        
+        if (group.h_a === headSquare.toString()) {
+            headType = 'h_a'
+            bodySquares = group.bs_a ? group.bs_a.split(',').map(s => s.trim()) : []
+        } else if (group.h_b === headSquare.toString()) {
+            headType = 'h_b'
+            bodySquares = group.bs_b ? group.bs_b.split(',').map(s => s.trim()) : []
+        } else if (group.h_c === headSquare.toString()) {
+            headType = 'h_c'
+            bodySquares = group.bs_c ? group.bs_c.split(',').map(s => s.trim()) : []
+        }
+        
+        if (headType && bodySquares.length > 0) {
+            // 检查对应的机身格子是否都是0（未被攻击过）
+            const roomResult = await db.collection('rooms').doc(roomId).get()
+            if (roomResult.data) {
+                const room = roomResult.data
+                const attackedPlayer = room.players.find(p => p.openid !== attackerOpenid)
+                const attackedChessBoard = attackedPlayer ? attackedPlayer.chess_board : {}
+                
+                let allBodySquaresUntouched = true
+                for (const bodySquare of bodySquares) {
+                    const squareKey = `chess_${bodySquare}`
+                    const status = attackedChessBoard[squareKey] || '0'
+                    if (status !== '0') {
+                        allBodySquaresUntouched = false
+                        break
+                    }
+                }
+                
+                // 如果所有机身格子都是0，记录一击必杀事件
+                if (allBodySquaresUntouched) {
+                    await db.collection('rooms').doc(roomId).update({
+                        data: {
+                            one_hit_kill_events: db.command.push({
+                                attacker_openid: attackerOpenid,
+                                head_square: headSquare,
+                                head_type: headType,
+                                timestamp: Date.now()
+                            })
+                        }
+                    })
+                }
+            }
+        }
+    } catch (error) {
+        console.error('检查一击必杀事件时出错:', error)
+    }
+}
+
+// 计算额外奖励
+async function calculateExtraRewards(db, room, winner, loserPlayer) {
+    try {
+        const winnerPlayer = room.players.find(p => p.openid === winner)
+        
+        // 1. 机头闪避奖励（无论胜负，真实玩家都奖励50分）
+        const headDodgeEvents = room.head_dodge_events || []
+        for (const event of headDodgeEvents) {
+            const player = room.players.find(p => p.openid === event.player_openid)
+            if (player && player.type === 1) {
+                await db.collection('users').doc(event.player_openid).update({
+                    data: {
+                        score: db.command.inc(50)
+                    }
+                })
+            }
+        }
+        
+        // 2. 一击必杀奖励（无论胜负，真实玩家都奖励50分）
+        const oneHitKillEvents = room.one_hit_kill_events || []
+        for (const event of oneHitKillEvents) {
+            const player = room.players.find(p => p.openid === event.attacker_openid)
+            if (player && player.type === 1) {
+                await db.collection('users').doc(event.attacker_openid).update({
+                    data: {
+                        score: db.command.inc(50)
+                    }
+                })
+            }
+        }
+        
+        // 3. 完美防御奖励（获胜玩家，每架完整飞机奖励20分）
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const winnerChessBoard = winnerPlayer.chess_board || {}
+            let perfectDefenseCount = 0
+            
+            // 检查三架飞机是否完整
+            const group = room.group_id ? await getGroupInfo(db, room.group_id) : null
+            if (group) {
+                // 检查h_a和bs_a对应的飞机
+                if (isPlaneIntact(winnerChessBoard, group.h_a, group.bs_a)) {
+                    perfectDefenseCount++
+                }
+                // 检查h_b和bs_b对应的飞机
+                if (isPlaneIntact(winnerChessBoard, group.h_b, group.bs_b)) {
+                    perfectDefenseCount++
+                }
+                // 检查h_c和bs_c对应的飞机
+                if (isPlaneIntact(winnerChessBoard, group.h_c, group.bs_c)) {
+                    perfectDefenseCount++
+                }
+            }
+            
+            // 给获胜玩家奖励
+            if (perfectDefenseCount > 0) {
+                await db.collection('users').doc(winner).update({
+                    data: {
+                        score: db.command.inc(perfectDefenseCount * 20)
+                    }
+                })
+            }
+        }
+        
+    } catch (error) {
+        console.error('计算额外奖励时出错:', error)
+    }
+}
+
+// 获取飞机组合信息
+async function getGroupInfo(db, groupId) {
+    try {
+        const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(groupId).get()
+        return groupResult.data
+    } catch (error) {
+        console.error('获取飞机组合信息时出错:', error)
+        return null
+    }
+}
+
+// 检查飞机是否完整（所有格子都是0）
+function isPlaneIntact(chessBoard, headSquare, bodySquaresStr) {
+    if (!headSquare || !bodySquaresStr) return false
+    
+    const bodySquares = bodySquaresStr.split(',').map(s => s.trim())
+    const allSquares = [headSquare, ...bodySquares]
+    
+    for (const square of allSquares) {
+        const squareKey = `chess_${square}`
+        const status = chessBoard[squareKey] || '0'
+        if (status !== '0') {
+            return false
+        }
+    }
+    
+    return true
 }
