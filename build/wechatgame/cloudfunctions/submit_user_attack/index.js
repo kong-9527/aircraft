@@ -192,6 +192,9 @@ exports.main = async (event, context) => {
                     }
                 })
             }
+            
+            // 11. 计算用户成就
+            await calculateUserAchievements(db, room, winner, currentPlayerOpenid)
         }
         
         return {
@@ -212,4 +215,250 @@ exports.main = async (event, context) => {
             data: null
         }
     }
+}
+
+// 计算用户成就的辅助函数
+async function calculateUserAchievements(db, room, winner, currentPlayerOpenid) {
+    try {
+        const players = room.players || []
+        const winnerPlayer = players.find(p => p.openid === winner)
+        const loserPlayer = players.find(p => p.openid !== winner)
+        
+        // 获取winner的chess_board中被标记为1的格子数量
+        const winnerHeadCount = countHeadSquares(room.chess_board)
+        
+        // 获取失败方的chess_board中被标记为1的格子数量
+        const loserHeadCount = countHeadSquares(room.chess_board)
+        
+        // 计算游戏时长（秒）
+        const gameDuration = Math.floor((room.last_move_time - room.ctime) / 1000)
+        
+        // 1. 累积得胜成就 (achievement_id: 1,2,3,4) - 仅对type=1的玩家
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [1, 2, 3, 4], 1)
+        }
+        
+        // 2. 累积得分成就 (achievement_id: 5,6,7) - 仅对type=1的玩家
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [5, 6, 7], 100) // 本次得胜得分100
+        }
+        
+        // 3. 累积击毁的成就 (achievement_id: 8,9,10,11) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [8, 9, 10, 11], 3) // winner一定是3
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            await updateAchievement(db, loserPlayer.openid, [8, 9, 10, 11], winnerHeadCount)
+        }
+        
+        // 4. 累积损失战机成就 (achievement_id: 12,13,14,15) - 仅对type=1的玩家，双方都计算
+        if (loserPlayer && loserPlayer.type === 1) {
+            await updateAchievement(db, loserPlayer.openid, [12, 13, 14, 15], 3) // 失败方一定+3
+        }
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [12, 13, 14, 15], winnerHeadCount)
+        }
+        
+        // 5. 累积总游戏时长 (achievement_id: 16,17,18,19) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [16, 17, 18, 19], gameDuration)
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            await updateAchievement(db, loserPlayer.openid, [16, 17, 18, 19], gameDuration)
+        }
+        
+        // 6. 累积参与1v1对战的场数 (achievement_id: 27,28,29) - 仅对type=1的玩家，双方都计算
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateAchievement(db, winner, [27, 28, 29], 1)
+        }
+        if (loserPlayer && loserPlayer.type === 1) {
+            await updateAchievement(db, loserPlayer.openid, [27, 28, 29], 1)
+        }
+        
+        // 7. 计算连胜局成就 (achievement_id: 78,79,80) - 仅对type=1的玩家，仅计算winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await calculateWinStreakAchievements(db, winner)
+        }
+        
+        // 8. 累积0阵亡的成就 (achievement_id: 72,73,74) - 仅对type=1的玩家，仅计算winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const hasNoHeadLoss = !hasAnyHeadLoss(room.chess_board)
+            if (hasNoHeadLoss) {
+                await updateAchievement(db, winner, [72, 73, 74], 1)
+            }
+        }
+        
+        // 9. 计算百发百中成就 (achievement_id: 70) - 仅对type=1的玩家，仅计算winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            const hasNoMiss = !hasAnyMiss(room.chess_board)
+            if (hasNoMiss) {
+                await updateAchievement(db, winner, [70], 1)
+            }
+        }
+        
+        // 10. 计算反者道之动成就 (achievement_id: 71) - 仅对type=1的玩家，仅计算失败方
+        if (loserPlayer && loserPlayer.type === 1) {
+            const hasNoHit = !hasAnyHit(room.chess_board)
+            if (hasNoHit) {
+                await updateAchievement(db, loserPlayer.openid, [71], 1)
+            }
+        }
+        
+    } catch (error) {
+        console.error('计算用户成就时出错:', error)
+    }
+}
+
+// 更新成就的通用函数
+async function updateAchievement(db, userId, achievementIds, increment) {
+    try {
+        for (const achievementId of achievementIds) {
+            // 获取或创建用户成就记录
+            const userAchievementResult = await db.collection('user_achievement')
+                .where({
+                    user_id: userId,
+                    achievement_id: achievementId
+                })
+                .get()
+            
+            let userAchievement
+            if (userAchievementResult.data.length === 0) {
+                // 创建新记录
+                const insertResult = await db.collection('user_achievement').add({
+                    data: {
+                        user_id: userId,
+                        achievement_id: achievementId,
+                        num: increment,
+                        is_achieved: 0,
+                        is_collected: 0
+                    }
+                })
+                userAchievement = {
+                    id: insertResult._id,
+                    user_id: userId,
+                    achievement_id: achievementId,
+                    num: increment,
+                    is_achieved: 0,
+                    is_collected: 0
+                }
+            } else {
+                userAchievement = userAchievementResult.data[0]
+                // 更新num值
+                await db.collection('user_achievement').doc(userAchievement._id).update({
+                    data: {
+                        num: db.command.inc(increment)
+                    }
+                })
+                userAchievement.num += increment
+            }
+            
+            // 获取基础成就信息并检查是否达到成就条件
+            const basicAchievementResult = await db.collection('basic_achievements')
+                .where({
+                    id: achievementId
+                })
+                .get()
+            
+            if (basicAchievementResult.data.length > 0) {
+                const basicAchievement = basicAchievementResult.data[0]
+                if (userAchievement.num >= basicAchievement.need) {
+                    await db.collection('user_achievement').doc(userAchievement._id).update({
+                        data: {
+                            is_achieved: 1
+                        }
+                    })
+                }
+            }
+        }
+    } catch (error) {
+        console.error('更新成就时出错:', error)
+    }
+}
+
+// 计算连胜局成就
+async function calculateWinStreakAchievements(db, winner) {
+    try {
+        // 获取用户最近的房间记录，按ctime倒序排序
+        const battleRoomsResult = await db.collection('battle_rooms')
+            .where({
+                winner: winner
+            })
+            .orderBy('ctime', 'desc')
+            .limit(10)
+            .get()
+        
+        const recentRooms = battleRoomsResult.data
+        
+        // 检查前3条记录
+        if (recentRooms.length >= 3) {
+            const first3Wins = recentRooms.slice(0, 3).every(room => room.winner === winner)
+            if (first3Wins) {
+                await updateAchievement(db, winner, [78], 1)
+            }
+        }
+        
+        // 检查前5条记录
+        if (recentRooms.length >= 5) {
+            const first5Wins = recentRooms.slice(0, 5).every(room => room.winner === winner)
+            if (first5Wins) {
+                await updateAchievement(db, winner, [79], 1)
+            }
+        }
+        
+        // 检查前10条记录
+        if (recentRooms.length >= 10) {
+            const first10Wins = recentRooms.slice(0, 10).every(room => room.winner === winner)
+            if (first10Wins) {
+                await updateAchievement(db, winner, [80], 1)
+            }
+        }
+    } catch (error) {
+        console.error('计算连胜局成就时出错:', error)
+    }
+}
+
+// 统计机头格子数量
+function countHeadSquares(chessBoard) {
+    let count = 0
+    for (let i = 1; i <= 144; i++) {
+        const squareKey = `chess_${i}`
+        if (chessBoard[squareKey] === '1') {
+            count++
+        }
+    }
+    return count
+}
+
+// 检查是否有阵亡（格子标记为1）
+function hasAnyHeadLoss(chessBoard) {
+    for (let i = 1; i <= 144; i++) {
+        const squareKey = `chess_${i}`
+        if (chessBoard[squareKey] === '1') {
+            return true
+        }
+    }
+    return false
+}
+
+// 检查是否有打空（格子标记为3）
+function hasAnyMiss(chessBoard) {
+    for (let i = 1; i <= 144; i++) {
+        const squareKey = `chess_${i}`
+        if (chessBoard[squareKey] === '3') {
+            return true
+        }
+    }
+    return false
+}
+
+// 检查是否有击中（格子标记为1或2或9）
+function hasAnyHit(chessBoard) {
+    for (let i = 1; i <= 144; i++) {
+        const squareKey = `chess_${i}`
+        const status = chessBoard[squareKey]
+        if (status === '1' || status === '2' || status === '9') {
+            return true
+        }
+    }
+    return false
 }
