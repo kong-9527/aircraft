@@ -124,12 +124,29 @@ exports.main = async (event, context) => {
         
         const userType = userResult.data.length > 0 ? userResult.data[0].type : 1 // 默认为1
         
+        // 检查用户是否有item_id=1的道具
+        const userItemResult = await db.collection('user_item').where({
+            openid: wxContext.OPENID,
+            item_id: 1
+        }).get()
+        
+        const hasItem1 = userItemResult.data.length > 0 && userItemResult.data[0].item_num > 0
+        
+        // 构建玩家的items数组
+        const playerItems = []
+        if (hasItem1) {
+            playerItems.push({
+                item_id: "1",
+                item_status: "0"
+            })
+        }
+        
         // 检查是否有可加入的房间
         const existingRoom = await findAvailableRoom(db)
         
         if (existingRoom) {
             // 加入现有房间
-            const joinResult = await joinExistingRoom(db, existingRoom, wxContext.OPENID, groupId, chessBoard, userType)
+            const joinResult = await joinExistingRoom(db, existingRoom, wxContext.OPENID, groupId, chessBoard, userType, playerItems)
             
             if (joinResult.success) {
                 return {
@@ -151,7 +168,7 @@ exports.main = async (event, context) => {
             }
         } else {
             // 创建新房间
-            const createResult = await createNewRoom(db, wxContext.OPENID, groupId, chessBoard, mode, userType)
+            const createResult = await createNewRoom(db, wxContext.OPENID, groupId, chessBoard, mode, userType, playerItems)
             
             if (createResult.success) {
                 return {
@@ -339,7 +356,7 @@ async function findAvailableRoom(db) {
 }
 
 // 创建新房间
-async function createNewRoom(db, openId, groupId, chessBoard, mode, userType) {
+async function createNewRoom(db, openId, groupId, chessBoard, mode, userType, playerItems) {
     try {
         const roomCode = await generateUniqueRoomCode(db)
         const currentTime = Date.now()
@@ -352,6 +369,7 @@ async function createNewRoom(db, openId, groupId, chessBoard, mode, userType) {
                     role: "first",
                     type: userType.toString(), // 添加type属性
                     group_id: groupId.toString(),
+                    items: playerItems, // 添加道具信息
                     chess_board: chessBoard
                 }
             ],
@@ -384,7 +402,7 @@ async function createNewRoom(db, openId, groupId, chessBoard, mode, userType) {
 }
 
 // 加入现有房间
-async function joinExistingRoom(db, room, openId, groupId, chessBoard, userType) {
+async function joinExistingRoom(db, room, openId, groupId, chessBoard, userType, playerItems) {
     try {
         // 检查房间是否已经有2个玩家
         if (room.players && room.players.length >= 2) {
@@ -408,6 +426,7 @@ async function joinExistingRoom(db, room, openId, groupId, chessBoard, userType)
             role: "second",
             type: userType.toString(), // 添加type属性
             group_id: groupId.toString(),
+            items: playerItems, // 添加道具信息
             chess_board: chessBoard
         }
         
