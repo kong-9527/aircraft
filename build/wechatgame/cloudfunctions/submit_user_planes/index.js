@@ -107,42 +107,55 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 获取用户ID（如果需要的话）
-        let userId = null
-        try {
-            const userResult = await db.collection('users').where({
-                open_id: wxContext.OPENID
-            }).get()
+        // 构建玩家的棋盘数据
+        const chessBoard = buildChessBoard()
+        
+        // 检查是否有可加入的房间
+        const existingRoom = await findAvailableRoom(db)
+        
+        if (existingRoom) {
+            // 加入现有房间
+            const joinResult = await joinExistingRoom(db, existingRoom, wxContext.OPENID, groupId, chessBoard)
             
-            if (userResult.data.length > 0) {
-                userId = userResult.data[0].id
+            if (joinResult.success) {
+                return {
+                    success: true,
+                    message: '成功加入房间，游戏开始',
+                    data: {
+                        room_code: existingRoom.room_code,
+                        group_id: groupId,
+                        plane_nums: planeNums,
+                        room_id: existingRoom._id,
+                        status: 'playing'
+                    }
+                }
+            } else {
+                return {
+                    success: false,
+                    message: joinResult.message
+                }
             }
-        } catch (error) {
-            console.log('获取用户ID失败，使用open_id作为标识')
-        }
-        
-        // 插入到匹配池
-        const matchPoolData = {
-            user_id: userId,
-            open_id: wxContext.OPENID,
-            join_time: Date.now(),
-            type: 1,
-            level: '0', // 默认全段位随机匹配
-            group_id: groupId,
-            mode: mode
-        }
-        
-        const insertResult = await db.collection('battle_matchpool').add({
-            data: matchPoolData
-        })
-        
-        return {
-            success: true,
-            message: '飞机布局提交成功，已加入匹配池',
-            data: {
-                group_id: groupId,
-                plane_nums: planeNums,
-                match_id: insertResult._id
+        } else {
+            // 创建新房间
+            const createResult = await createNewRoom(db, wxContext.OPENID, groupId, chessBoard, mode)
+            
+            if (createResult.success) {
+                return {
+                    success: true,
+                    message: '房间创建成功，等待其他玩家加入',
+                    data: {
+                        room_code: createResult.room_code,
+                        group_id: groupId,
+                        plane_nums: planeNums,
+                        room_id: createResult.room_id,
+                        status: 'waiting'
+                    }
+                }
+            } else {
+                return {
+                    success: false,
+                    message: createResult.message
+                }
             }
         }
         
@@ -250,5 +263,157 @@ async function findGroupId(db, planeNums) {
     } catch (error) {
         console.error('查找group_id时出错:', error)
         return null
+    }
+}
+
+// 构建棋盘数据（1-144个格子，初始状态为"0"）
+function buildChessBoard() {
+    const chessBoard = {}
+    for (let i = 1; i <= 144; i++) {
+        chessBoard[`chess_${i}`] = "0"
+    }
+    return chessBoard
+}
+
+// 生成唯一的6位数字room_code
+async function generateUniqueRoomCode(db) {
+    let attempts = 0
+    const maxAttempts = 10
+    
+    while (attempts < maxAttempts) {
+        // 生成6位随机数字
+        const roomCode = Math.floor(100000 + Math.random() * 900000).toString()
+        
+        // 检查是否已存在
+        const result = await db.collection('battle_rooms').where({
+            room_code: roomCode,
+            status: db.command.in(['waiting', 'playing'])
+        }).get()
+        
+        if (result.data.length === 0) {
+            return roomCode
+        }
+        
+        attempts++
+    }
+    
+    throw new Error('无法生成唯一的room_code')
+}
+
+// 查找可加入的房间
+async function findAvailableRoom(db) {
+    try {
+        const result = await db.collection('battle_rooms').where({
+            mode: 2,
+            status: 'waiting'
+        }).limit(1).get()
+        
+        if (result.data.length > 0) {
+            const room = result.data[0]
+            // 检查房间是否已经有2个玩家
+            if (room.players && room.players.length >= 2) {
+                return null
+            }
+            return room
+        }
+        
+        return null
+    } catch (error) {
+        console.error('查找可加入房间时出错:', error)
+        return null
+    }
+}
+
+// 创建新房间
+async function createNewRoom(db, openId, groupId, chessBoard, mode) {
+    try {
+        const roomCode = await generateUniqueRoomCode(db)
+        const currentTime = Date.now()
+        
+        const roomData = {
+            room_code: roomCode,
+            players: [
+                {
+                    openid: openId,
+                    role: "first",
+                    group_id: groupId.toString(),
+                    chess_board: chessBoard
+                }
+            ],
+            status: 'waiting',
+            ctime: currentTime,
+            current_player: openId,
+            winner: '',
+            timeout: 30,
+            last_move_time: currentTime,
+            mode: mode
+        }
+        
+        const result = await db.collection('battle_rooms').add({
+            data: roomData
+        })
+        
+        return {
+            success: true,
+            room_code: roomCode,
+            room_id: result._id
+        }
+        
+    } catch (error) {
+        console.error('创建新房间时出错:', error)
+        return {
+            success: false,
+            message: '创建房间失败'
+        }
+    }
+}
+
+// 加入现有房间
+async function joinExistingRoom(db, room, openId, groupId, chessBoard) {
+    try {
+        // 检查房间是否已经有2个玩家
+        if (room.players && room.players.length >= 2) {
+            return {
+                success: false,
+                message: '房间已满'
+            }
+        }
+        
+        // 检查玩家是否已经在房间中
+        if (room.players && room.players.some(player => player.openid === openId)) {
+            return {
+                success: false,
+                message: '您已经在房间中'
+            }
+        }
+        
+        // 添加新玩家
+        const newPlayer = {
+            openid: openId,
+            role: "second",
+            group_id: groupId.toString(),
+            chess_board: chessBoard
+        }
+        
+        const updateData = {
+            players: db.command.push(newPlayer),
+            status: 'playing',
+            last_move_time: Date.now()
+        }
+        
+        await db.collection('battle_rooms').doc(room._id).update({
+            data: updateData
+        })
+        
+        return {
+            success: true
+        }
+        
+    } catch (error) {
+        console.error('加入房间时出错:', error)
+        return {
+            success: false,
+            message: '加入房间失败'
+        }
     }
 }
