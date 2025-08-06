@@ -169,6 +169,120 @@ exports.main = async (event, context) => {
             // 这里不返回错误，因为主要功能已经完成
         }
         
+        // 7. 新增：处理邀请人的新人礼和成就逻辑
+        if (newgift_id === 1) {
+            try {
+                // 查询当前用户信息，检查是否有邀请人
+                const currentUserResult = await db.collection('users')
+                    .where({
+                        openid: openid
+                    })
+                    .get()
+                
+                if (currentUserResult.data.length > 0) {
+                    const currentUser = currentUserResult.data[0]
+                    
+                    // 检查是否有邀请码且不是自己邀请自己
+                    if (currentUser.invited_code && currentUser.invited_code !== openid) {
+                        const inviterOpenid = currentUser.invited_code
+                        
+                        // 7.1 为邀请人完成新人礼任务 id=9
+                        const inviterNewgiftResult = await db.collection('user_newgift')
+                            .where({
+                                user_id: inviterOpenid,
+                                newgift_id: 9
+                            })
+                            .get()
+                        
+                        if (inviterNewgiftResult.data.length === 0) {
+                            // 创建邀请人的新人礼记录
+                            await db.collection('user_newgift').add({
+                                data: {
+                                    user_id: inviterOpenid,
+                                    newgift_id: 9,
+                                    is_achieved: 1,
+                                    is_collected: 0
+                                }
+                            })
+                        } else {
+                            // 更新邀请人的新人礼记录
+                            await db.collection('user_newgift')
+                                .where({
+                                    user_id: inviterOpenid,
+                                    newgift_id: 9
+                                })
+                                .update({
+                                    data: {
+                                        is_achieved: 1
+                                    }
+                                })
+                        }
+                        
+                        // 7.2 为邀请人更新成就进度
+                        const achievementIds = [56, 57, 58]
+                        
+                        for (const achievementId of achievementIds) {
+                            // 查询邀请人的成就记录
+                            const inviterAchievementResult = await db.collection('user_achievement')
+                                .where({
+                                    user_id: inviterOpenid,
+                                    achievement_id: achievementId
+                                })
+                                .get()
+                            
+                            if (inviterAchievementResult.data.length === 0) {
+                                // 创建邀请人的成就记录
+                                await db.collection('user_achievement').add({
+                                    data: {
+                                        user_id: inviterOpenid,
+                                        achievement_id: achievementId,
+                                        num: 1,
+                                        is_achieved: 0
+                                    }
+                                })
+                            } else {
+                                // 更新邀请人的成就记录
+                                const currentAchievement = inviterAchievementResult.data[0]
+                                const newNum = (currentAchievement.num || 0) + 1
+                                
+                                // 查询成就配置，判断是否达到完成条件
+                                const basicAchievementResult = await db.collection('basic_achievements')
+                                    .where({
+                                        id: achievementId
+                                    })
+                                    .get()
+                                
+                                let isAchieved = 0
+                                if (basicAchievementResult.data.length > 0) {
+                                    const needValue = basicAchievementResult.data[0].need || 0
+                                    if (newNum >= needValue) {
+                                        isAchieved = 1
+                                    }
+                                }
+                                
+                                await db.collection('user_achievement')
+                                    .where({
+                                        user_id: inviterOpenid,
+                                        achievement_id: achievementId
+                                    })
+                                    .update({
+                                        data: {
+                                            num: newNum,
+                                            is_achieved: isAchieved
+                                        }
+                                    })
+                            }
+                        }
+                        
+                        console.log('邀请人新人礼和成就更新成功')
+                    }
+                }
+            } catch (error) {
+                console.error('处理邀请人新人礼和成就失败:', error)
+                // 这里不返回错误，因为主要功能已经完成
+            }
+        }
+        
         return {
             success: true,
             message: '新人礼奖励领取成功',
