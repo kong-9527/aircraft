@@ -289,6 +289,15 @@ async function executeAIAttackMode1(db, room, targetSquare, decision) {
         
         // 处理游戏结束逻辑（mode=1的成就和新人礼）
         if (gameEnded && winner) {
+            const winnerPlayer = room.players.find(p => p.openid === winner)
+            
+            // 只有真实玩家获胜时才给奖励，AI获胜时不给任何奖励
+            if (winnerPlayer && winnerPlayer.type === 1) {
+                // 真实玩家获胜，给勋章奖励
+                await handleAIVictoryReward(db, room, winner)
+            }
+            // AI获胜时不做任何奖励处理
+            
             await handleAIAchievementsAndNewGifts(db, room, winner)
         }
         
@@ -1396,5 +1405,57 @@ async function checkWin10GamesNewGift(db, winner) {
         }
     } catch (error) {
         console.error('检查获胜10局新人礼时出错:', error)
+    }
+}
+
+// 处理AI胜利奖励（勋章奖励）
+async function handleAIVictoryReward(db, room, winner) {
+    try {
+        const difficulty = room.difficulty || 1
+        let medalReward = 0
+        
+        // 根据难度决定勋章奖励
+        switch (difficulty) {
+            case 1:
+                medalReward = 10
+                break
+            case 2:
+                medalReward = 20
+                break
+            case 3:
+                medalReward = 30
+                break
+            default:
+                medalReward = 10
+        }
+        
+        // 查找用户的item_id=7记录
+        const userItemResult = await db.collection('user_item').where({
+            openid: winner,
+            item_id: 7
+        }).get()
+        
+        if (userItemResult.data.length > 0) {
+            // 更新现有记录
+            await db.collection('user_item').doc(userItemResult.data[0]._id).update({
+                data: {
+                    item_num: db.command.inc(medalReward)
+                }
+            })
+        } else {
+            // 创建新记录
+            await db.collection('user_item').add({
+                data: {
+                    openid: winner,
+                    item_id: 7,
+                    item_num: medalReward
+                }
+            })
+        }
+        
+        console.log(`AI胜利奖励：用户${winner}获得${medalReward}勋章`)
+        
+    } catch (error) {
+        console.error('处理AI胜利奖励时出错:', error)
     }
 }
