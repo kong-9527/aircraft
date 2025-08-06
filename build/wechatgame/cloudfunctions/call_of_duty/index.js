@@ -265,6 +265,7 @@ async function insertBattleAiDecision(db, roomId, aiOpenId) {
         room_id: roomId,
         mode: 2,
         difficulty: 2,
+        round: 0,
         ai_open_id: aiOpenId
     }
     
