@@ -263,6 +263,7 @@ async function insertBattleAiDecision(db, roomId, aiOpenId) {
     // 2. 构建battle_ai_decision记录
     const battleAiDecision = {
         room_id: roomId,
+        plane_type: 1,
         mode: 2,
         difficulty: 2,
         round: 0,

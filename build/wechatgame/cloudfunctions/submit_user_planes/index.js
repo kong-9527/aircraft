@@ -363,6 +363,7 @@ async function createNewRoom(db, openId, groupId, chessBoard, mode, userType, pl
         
         const roomData = {
             room_code: roomCode,
+            plane_type: 1,
             players: [
                 {
                     openid: openId,
