@@ -324,15 +324,20 @@ async function getAIOpponent(db) {
 // 随机选择AI飞机布局
 async function getRandomAIGroupId(db) {
     try {
-        // 获取所有可用的group_id
-        const result = await db.collection('ai_basic_plane_groups_12x12_3').aggregate()
-            .sample({
-                size: 1
-            })
-            .end()
+        // 生成1~200万之间的随机数
+        const randomNum = Math.floor(Math.random() * 2000000) + 1
+        // 除以942032取余数作为id
+        const targetId = randomNum % 942032
         
-        if (result.list.length > 0) {
-            return result.list[0].id
+        // 查询ai_basic_plane_groups_12x12_3表获取对应的id
+        const result = await db.collection('ai_basic_plane_groups_12x12_3')
+            .where({
+                id: targetId
+            })
+            .get()
+        
+        if (result.data.length > 0) {
+            return result.data[0].id
         }
         
         return null
