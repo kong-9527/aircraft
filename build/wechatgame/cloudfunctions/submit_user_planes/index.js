@@ -380,7 +380,8 @@ async function createNewRoom(db, openId, groupId, chessBoard, mode, userType, pl
             winner: '',
             timeout: 30,
             last_move_time: currentTime,
-            mode: mode
+            mode: mode,
+            attack_num: 0
         }
         
         const result = await db.collection('battle_rooms').add({

@@ -162,11 +162,12 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
             }
         })
         
-        // 确保players更新完毕后再更新status和last_move_time
+        // 确保players更新完毕后再更新status、last_move_time和attack_num
         await transaction.collection('battle_rooms').doc(roomId).update({
             data: {
                 status: 'playing',
-                last_move_time: Date.now()
+                last_move_time: Date.now(),
+                attack_num: db.command.inc(1)
             }
         })
         
