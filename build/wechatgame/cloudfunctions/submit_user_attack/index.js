@@ -263,7 +263,8 @@ exports.main = async (event, context) => {
         // 9. 更新房间状态
         const updateData = {
             chess_board: updatedChessBoard,
-            last_move_time: currentTime
+            last_move_time: currentTime,
+            attack_num: db.command.inc(1)
         }
         
         if (gameEnded) {

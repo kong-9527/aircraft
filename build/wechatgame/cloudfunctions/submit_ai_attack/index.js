@@ -10,9 +10,9 @@ exports.main = async (event, context) => {
     
     try {
         // 1. 验证输入参数
-        const { plane_type, data, room_id } = event
+        const { plane_type, mode, room_id } = event
         
-        if (!plane_type || !data || !room_id) {
+        if (!plane_type || !mode || !room_id) {
             return {
                 success: false,
                 message: '参数不完整',
@@ -20,79 +20,172 @@ exports.main = async (event, context) => {
             }
         }
         
-        if (!Array.isArray(data) || data.length === 0) {
+        // 2. 验证参数值
+        if (plane_type !== 1 || mode !== 2) {
             return {
-                success: false,
-                message: '攻击数据格式错误',
+                success: true,
+                message: '参数不符合要求，本次AI攻击不予处理',
                 data: null
             }
         }
         
-        // 2. 查询房间信息
+        // 3. 验证用户信息
+        const userResult = await db.collection('users').where({
+            openid: wxContext.OPENID
+        }).get()
+        
+        if (userResult.data.length === 0 || userResult.data[0].type !== 1) {
+            return {
+                success: true,
+                message: '用户信息验证失败，本次AI攻击不予处理',
+                data: null
+            }
+        }
+        
+        // 4. 验证房间信息
         const roomResult = await db.collection('rooms').doc(room_id).get()
         if (!roomResult.data) {
             return {
-                success: false,
-                message: '房间不存在',
+                success: true,
+                message: '房间不存在，本次AI攻击不予处理',
                 data: null
             }
         }
         
         const room = roomResult.data
-        const currentPlayerOpenid = wxContext.OPENID
         
-        // 检查房间模式，只有mode=2时才执行当前逻辑
-        if (room.mode !== 2) {
+        // 检查房间模式
+        if (room.mode !== 2 || room.plane_type !== 1) {
             return {
-                success: false,
-                message: '不支持的房间模式',
+                success: true,
+                message: '房间模式不符合要求，本次AI攻击不予处理',
                 data: null
             }
         }
         
-        // 3. 检查格子状态
-        const chessBoard = room.chess_board || {}
-        const attackedSquares = data.map(item => item.square)
+        // 5. 获取AI决策数据
+        const decisionResult = await db.collection('battle_ai_decision').where({
+            room_id: room_id
+        }).get()
         
-        // 检查是否有已被攻击的格子
-        for (const square of attackedSquares) {
-            const squareStatus = chessBoard[`chess_${square}`] || '0'
-            if (['1', '2', '3'].includes(squareStatus)) {
-                return {
-                    success: false,
-                    message: '已被攻击的格子不需要再次攻击',
-                    data: null
-                }
+        if (decisionResult.data.length === 0) {
+            return {
+                success: true,
+                message: 'AI决策数据不存在，本次AI攻击不予处理',
+                data: null
             }
         }
         
-        // 4. 检查item_id=3道具使用逻辑
-        if (attackedSquares.length >= 2) {
-            const currentPlayer = room.players.find(p => p.openid === currentPlayerOpenid)
-            if (currentPlayer && currentPlayer.items) {
-                // 检查是否已经使用了item_id=3的道具
-                const hasItem3 = currentPlayer.items.some(item => item.item_id === '3')
-                if (hasItem3) {
-                    return {
-                        success: false,
-                        message: '一种科技在一句战斗中只能使用一次',
-                        data: null
-                    }
-                }
-                
-                // 如果没有使用过item_id=3，则添加该道具记录
-                await addItem3ToPlayer(db, room_id, currentPlayerOpenid)
+        const decision = decisionResult.data[0]
+        
+        // 6. AI决策逻辑
+        const targetSquare = await makeAIDecision(db, decision)
+        if (!targetSquare) {
+            return {
+                success: true,
+                message: 'AI决策失败，本次AI攻击不予处理',
+                data: null
             }
         }
         
-        // 5. 查询飞机组合信息
+        // 7. 执行攻击逻辑
+        const attackResult = await executeAttack(db, room, targetSquare, decision)
+        
+        return {
+            success: true,
+            message: 'AI攻击执行完成',
+            data: attackResult
+        }
+        
+    } catch (error) {
+        console.error('submit_ai_attack 错误:', error)
+        return {
+            success: false,
+            message: '服务器错误',
+            data: null
+        }
+    }
+}
+
+// AI决策函数
+async function makeAIDecision(db, decision) {
+    try {
+        const { difficulty, round } = decision
+        
+        // 获取所有权重大于0的格子
+        const availableSquares = []
+        for (let i = 1; i <= 144; i++) {
+            const weightKey = `weight_${i}`
+            const weight = decision[weightKey] || 0
+            if (weight > 0) {
+                availableSquares.push({
+                    square: i,
+                    weight: weight
+                })
+            }
+        }
+        
+        if (availableSquares.length === 0) {
+            return null
+        }
+        
+        let targetSquare = null
+        
+        if (difficulty === 1) {
+            const remainder = round % 3
+            if (remainder === 0) {
+                // 选择权重最低的格子
+                targetSquare = availableSquares.reduce((min, current) => 
+                    current.weight < min.weight ? current : min
+                ).square
+            } else {
+                // 选择权重最高的格子
+                targetSquare = availableSquares.reduce((max, current) => 
+                    current.weight > max.weight ? current : max
+                ).square
+            }
+        } else if (difficulty === 2) {
+            const remainder = round % 5
+            if (remainder === 0) {
+                // 选择权重最低的格子
+                targetSquare = availableSquares.reduce((min, current) => 
+                    current.weight < min.weight ? current : min
+                ).square
+            } else {
+                // 选择权重最高的格子
+                targetSquare = availableSquares.reduce((max, current) => 
+                    current.weight > max.weight ? current : max
+                ).square
+            }
+        } else if (difficulty === 3) {
+            // 始终选择权重最高的格子
+            targetSquare = availableSquares.reduce((max, current) => 
+                current.weight > max.weight ? current : max
+            ).square
+        }
+        
+        return targetSquare
+        
+    } catch (error) {
+        console.error('AI决策出错:', error)
+        return null
+    }
+}
+
+// 执行攻击函数
+async function executeAttack(db, room, targetSquare, decision) {
+    try {
+        const currentPlayerOpenid = room.current_player
+        const currentPlayer = room.players.find(p => p.openid === currentPlayerOpenid)
+        
+        if (!currentPlayer || currentPlayer.type !== 2) {
+            return { success: false, message: '当前玩家不是AI' }
+        }
+        
+        // 查询飞机组合信息
         const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(room.group_id).get()
         if (!groupResult.data) {
-            return {
-                success: false,
-                message: '飞机组合信息不存在',
-                data: null
-            }
+            return { success: false, message: '飞机组合信息不存在' }
         }
         
         const group = groupResult.data
@@ -114,30 +207,30 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 6. 处理攻击逻辑（包含道具功能和奖励事件记录）
-        let hasHeadHit = false
-        const updatedChessBoard = { ...chessBoard }
+        // 获取被攻击玩家信息
+        const attackedPlayer = room.players.find(p => p.openid !== currentPlayerOpenid)
+        const chessBoard = room.chess_board || {}
         
-        // 获取被攻击玩家的信息
-        const attackedPlayer = players.find(p => p.openid !== currentPlayerOpenid)
-        const attackerPlayer = players.find(p => p.openid === currentPlayerOpenid)
+        // 检查格子状态
+        const squareKey = `chess_${targetSquare}`
+        const currentStatus = chessBoard[squareKey] || '0'
+        
+        // 检查是否有已被攻击的格子
+        if (['1', '2', '3'].includes(currentStatus)) {
+            return { success: false, message: '格子已被攻击' }
+        }
+        
+        // 处理攻击逻辑
+        let attackResult = null
+        let hasHeadHit = false
         
         // 检查是否是被攻击方首次被击中
         let isFirstHit = false
         let hasHitInThisAttack = false
-        const squaresToMarkAsHit = []
         
-        // 先检查本次攻击是否有击中
-        for (const square of attackedSquares) {
-            const squareKey = `chess_${square}`
-            const currentStatus = updatedChessBoard[squareKey] || '0'
-            
-            if (currentStatus === '0') {
-                if (headSquares.includes(square.toString()) || bodySquares.includes(square.toString())) {
-                    hasHitInThisAttack = true
-                    squaresToMarkAsHit.push(square)
-                }
-            }
+        // 检查本次攻击是否击中
+        if (headSquares.includes(targetSquare.toString()) || bodySquares.includes(targetSquare.toString())) {
+            hasHitInThisAttack = true
         }
         
         // 检查是否是被攻击方首次被击中
@@ -145,7 +238,7 @@ exports.main = async (event, context) => {
             let hasAnyPreviousHit = false
             for (let i = 1; i <= 144; i++) {
                 const squareKey = `chess_${i}`
-                const status = updatedChessBoard[squareKey] || '0'
+                const status = chessBoard[squareKey] || '0'
                 if (status === '1' || status === '2') {
                     hasAnyPreviousHit = true
                     break
@@ -154,21 +247,11 @@ exports.main = async (event, context) => {
             isFirstHit = !hasAnyPreviousHit
         }
         
-        // 检查是否攻击了已标记为9的格子
-        let hasAttackedMarkedNine = false
-        for (const square of attackedSquares) {
-            const squareKey = `chess_${square}`
-            const currentStatus = updatedChessBoard[squareKey] || '0'
-            if (currentStatus === '9') {
-                hasAttackedMarkedNine = true
-                break
-            }
-        }
-        
         // 处理道具逻辑
         let usedItem = false
-        let headDodgeEvent = false // 记录机头闪避事件
-        if (attackedPlayer && attackedPlayer.items && hasHitInThisAttack && !hasAttackedMarkedNine) {
+        let headDodgeEvent = false
+        
+        if (attackedPlayer && attackedPlayer.items && hasHitInThisAttack) {
             const availableItems = attackedPlayer.items.filter(item => item.item_status === '0')
             const item1 = availableItems.find(item => item.item_id === '1')
             const item2 = availableItems.find(item => item.item_id === '2')
@@ -176,80 +259,68 @@ exports.main = async (event, context) => {
             // 优先使用item_id=1的道具（首次被击中时）
             if (isFirstHit && item1) {
                 usedItem = true
-                // 标记道具为已使用
-                await markItemAsUsed(db, room_id, attackedPlayer.openid, '1')
-                // 将所有应该被标记为1或2的格子标记为9
-                for (const square of squaresToMarkAsHit) {
-                    const squareKey = `chess_${square}`
-                    updatedChessBoard[squareKey] = '9'
-                    // 检查是否是机头闪避
-                    if (headSquares.includes(square.toString())) {
-                        headDodgeEvent = true
-                    }
+                await markItemAsUsed(db, room._id, attackedPlayer.openid, '1')
+                chessBoard[squareKey] = '9'
+                if (headSquares.includes(targetSquare.toString())) {
+                    headDodgeEvent = true
                 }
             } else if (item2) {
                 usedItem = true
-                // 标记道具为已使用
-                await markItemAsUsed(db, room_id, attackedPlayer.openid, '2')
-                // 将所有应该被标记为1或2的格子标记为9
-                for (const square of squaresToMarkAsHit) {
-                    const squareKey = `chess_${square}`
-                    updatedChessBoard[squareKey] = '9'
-                    // 检查是否是机头闪避
-                    if (headSquares.includes(square.toString())) {
-                        headDodgeEvent = true
-                    }
+                await markItemAsUsed(db, room._id, attackedPlayer.openid, '2')
+                chessBoard[squareKey] = '9'
+                if (headSquares.includes(targetSquare.toString())) {
+                    headDodgeEvent = true
                 }
             }
         }
         
         // 记录机头闪避事件
         if (headDodgeEvent && attackedPlayer && attackedPlayer.type === 1) {
-            await recordHeadDodgeEvent(db, room_id, attackedPlayer.openid)
+            await recordHeadDodgeEvent(db, room._id, attackedPlayer.openid)
         }
         
         // 如果没有使用道具，按正常逻辑处理攻击
         if (!usedItem) {
-            for (const square of attackedSquares) {
-                const squareKey = `chess_${square}`
-                const currentStatus = updatedChessBoard[squareKey] || '0'
-                
+            if (currentStatus === '9') {
                 // 如果之前是9（闪避），本次视为击中
-                if (currentStatus === '9') {
-                    if (headSquares.includes(square.toString())) {
-                        updatedChessBoard[squareKey] = '1'
-                        hasHeadHit = true
-                        // 检查是否是一击必杀
-                        await checkOneHitKill(db, room_id, currentPlayerOpenid, square, group)
-                    } else if (bodySquares.includes(square.toString())) {
-                        updatedChessBoard[squareKey] = '2'
-                    }
+                if (headSquares.includes(targetSquare.toString())) {
+                    chessBoard[squareKey] = '1'
+                    hasHeadHit = true
+                    attackResult = 'head'
+                    await checkOneHitKill(db, room._id, currentPlayerOpenid, targetSquare, group)
+                } else if (bodySquares.includes(targetSquare.toString())) {
+                    chessBoard[squareKey] = '2'
+                    attackResult = 'body'
+                }
+            } else {
+                // 正常攻击
+                if (headSquares.includes(targetSquare.toString())) {
+                    chessBoard[squareKey] = '1'
+                    hasHeadHit = true
+                    attackResult = 'head'
+                    await checkOneHitKill(db, room._id, currentPlayerOpenid, targetSquare, group)
+                } else if (bodySquares.includes(targetSquare.toString())) {
+                    chessBoard[squareKey] = '2'
+                    attackResult = 'body'
                 } else {
-                    // 正常攻击
-                    if (headSquares.includes(square.toString())) {
-                        updatedChessBoard[squareKey] = '1'
-                        hasHeadHit = true
-                        // 检查是否是一击必杀
-                        await checkOneHitKill(db, room_id, currentPlayerOpenid, square, group)
-                    } else if (bodySquares.includes(square.toString())) {
-                        updatedChessBoard[squareKey] = '2'
-                    } else {
-                        updatedChessBoard[squareKey] = '3' // 打空了
-                    }
+                    chessBoard[squareKey] = '3' // 打空了
+                    attackResult = 'miss'
                 }
             }
+        } else {
+            attackResult = 'dodge'
         }
         
-        // 7. 统计机头数量
+        // 统计机头数量
         let headCount = 0
         for (let i = 1; i <= 144; i++) {
             const squareKey = `chess_${i}`
-            if (updatedChessBoard[squareKey] === '1') {
+            if (chessBoard[squareKey] === '1') {
                 headCount++
             }
         }
         
-        // 8. 判断胜负和更新游戏状态
+        // 判断胜负
         const currentTime = Date.now()
         let winner = null
         let gameEnded = false
@@ -260,10 +331,11 @@ exports.main = async (event, context) => {
             gameEnded = true
         }
         
-        // 9. 更新房间状态
+        // 更新房间状态
         const updateData = {
-            chess_board: updatedChessBoard,
-            last_move_time: currentTime
+            chess_board: chessBoard,
+            last_move_time: currentTime,
+            attack_num: db.command.inc(1)
         }
         
         if (gameEnded) {
@@ -278,35 +350,14 @@ exports.main = async (event, context) => {
             updateData.current_player = nextPlayer.openid
         }
         
-        await db.collection('rooms').doc(room_id).update({
+        await db.collection('rooms').doc(room._id).update({
             data: updateData
         })
         
-        // 10. 处理AI攻击
-        if (!gameEnded) {
-            const nextPlayer = room.players.find(p => p.openid === updateData.current_player)
-            if (nextPlayer && nextPlayer.type === 2) {
-                // 延迟1-5秒后调用AI攻击
-                const delay = Math.floor(Math.random() * 4000) + 1000 // 1-5秒
-                
-                setTimeout(async () => {
-                    try {
-                        await cloud.callFunction({
-                            name: 'submit_ai_attack',
-                            data: {
-                                plane_type: 1,
-                                data: [], // AI会生成自己的攻击数据
-                                room_id: room_id
-                            }
-                        })
-                    } catch (error) {
-                        console.error('AI攻击调用失败:', error)
-                    }
-                }, delay)
-            }
-        }
+        // 更新AI决策权重
+        await updateAIDecisionWeights(db, room._id, attackResult, decision)
         
-        // 11. 结算奖励
+        // 处理游戏结束逻辑
         if (gameEnded && winner) {
             const winnerPlayer = room.players.find(p => p.openid === winner)
             const loserPlayer = room.players.find(p => p.openid !== winner)
@@ -320,30 +371,79 @@ exports.main = async (event, context) => {
                 })
             }
             
-            // 12. 计算额外奖励
+            // 计算额外奖励
             await calculateExtraRewards(db, room, winner, loserPlayer)
             
-            // 13. 计算用户成就
+            // 计算用户成就
             await calculateUserAchievements(db, room, winner, currentPlayerOpenid)
         }
         
         return {
             success: true,
-            message: gameEnded ? '游戏结束' : '攻击成功',
-            data: {
-                gameEnded,
-                winner,
-                headCount
-            }
+            gameEnded,
+            winner,
+            headCount,
+            attackResult
         }
         
     } catch (error) {
-        console.error('submit_user_attack 错误:', error)
-        return {
-            success: false,
-            message: '服务器错误',
-            data: null
+        console.error('执行攻击时出错:', error)
+        return { success: false, message: '攻击执行失败' }
+    }
+}
+
+// 更新AI决策权重
+async function updateAIDecisionWeights(db, roomId, attackResult, decision) {
+    try {
+        let factorTable = null
+        
+        // 根据攻击结果选择对应的因子表
+        if (attackResult === 'head') {
+            const factorResult = await db.collection('ai_factor_head').where({
+                room_id: roomId
+            }).get()
+            factorTable = factorResult.data[0]
+        } else if (attackResult === 'body') {
+            const factorResult = await db.collection('ai_factor_body').where({
+                room_id: roomId
+            }).get()
+            factorTable = factorResult.data[0]
+        } else if (attackResult === 'miss') {
+            const factorResult = await db.collection('ai_factor_miss').where({
+                room_id: roomId
+            }).get()
+            factorTable = factorResult.data[0]
         }
+        
+        if (factorTable) {
+            // 更新权重
+            const updateData = {}
+            for (let i = 1; i <= 144; i++) {
+                const weightKey = `weight_${i}`
+                const factorKey = `factor_${i}`
+                const currentWeight = decision[weightKey] || 0
+                const factor = factorTable[factorKey] || 1
+                updateData[weightKey] = currentWeight * factor
+            }
+            
+            // 更新round
+            updateData.round = decision.round + 1
+            
+            // 更新battle_ai_decision表
+            await db.collection('battle_ai_decision').doc(decision._id).update({
+                data: updateData
+            })
+        } else {
+            // 如果没有找到因子表，只更新round
+            await db.collection('battle_ai_decision').doc(decision._id).update({
+                data: {
+                    round: decision.round + 1
+                }
+            })
+        }
+        
+    } catch (error) {
+        console.error('更新AI决策权重时出错:', error)
     }
 }
 
@@ -669,46 +769,46 @@ async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
     }
 }
 
-// 为玩家添加item_id=3道具的辅助函数
-async function addItem3ToPlayer(db, roomId, playerOpenid) {
-    try {
-        // 更新房间中指定玩家，添加item_id=3的道具
-        const roomResult = await db.collection('rooms').doc(roomId).get()
-        if (!roomResult.data) {
-            console.error('房间不存在')
-            return
-        }
+// 为玩家添加item_id=3道具的辅助函数——AI不需要使用item=3的道具
+// async function addItem3ToPlayer(db, roomId, playerOpenid) {
+//     try {
+//         // 更新房间中指定玩家，添加item_id=3的道具
+//         const roomResult = await db.collection('rooms').doc(roomId).get()
+//         if (!roomResult.data) {
+//             console.error('房间不存在')
+//             return
+//         }
         
-        const room = roomResult.data
-        const players = room.players || []
+//         const room = roomResult.data
+//         const players = room.players || []
         
-        // 找到指定玩家并添加item_id=3道具
-        for (let i = 0; i < players.length; i++) {
-            if (players[i].openid === playerOpenid) {
-                if (!players[i].items) {
-                    players[i].items = []
-                }
+//         // 找到指定玩家并添加item_id=3道具
+//         for (let i = 0; i < players.length; i++) {
+//             if (players[i].openid === playerOpenid) {
+//                 if (!players[i].items) {
+//                     players[i].items = []
+//                 }
                 
-                // 添加item_id=3道具，状态为已使用
-                players[i].items.push({
-                    item_id: "3",
-                    item_status: "1"
-                })
-                break
-            }
-        }
+//                 // 添加item_id=3道具，状态为已使用
+//                 players[i].items.push({
+//                     item_id: "3",
+//                     item_status: "1"
+//                 })
+//                 break
+//             }
+//         }
         
-        // 更新房间数据
-        await db.collection('rooms').doc(roomId).update({
-            data: {
-                players: players
-            }
-        })
+//         // 更新房间数据
+//         await db.collection('rooms').doc(roomId).update({
+//             data: {
+//                 players: players
+//             }
+//         })
         
-    } catch (error) {
-        console.error('添加item_id=3道具时出错:', error)
-    }
-}
+//     } catch (error) {
+//         console.error('添加item_id=3道具时出错:', error)
+//     }
+// }
 
 // 记录机头闪避事件
 async function recordHeadDodgeEvent(db, roomId, playerOpenid) {
