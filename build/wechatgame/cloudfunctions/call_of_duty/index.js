@@ -173,12 +173,7 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
         await transaction.commit()
         
         // 在AI用户成功加入房间后，插入battle_ai_decision记录
-        try {
-            await insertBattleAiDecision(db, roomId, aiUser.openid)
-        } catch (error) {
-            console.error('插入battle_ai_decision记录失败:', error)
-            // 不影响主要逻辑，继续返回成功
-        }
+        await insertBattleAiDecision(db, roomId, aiUser.openid)
         
         return {
             code: 200,

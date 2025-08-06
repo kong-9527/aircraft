@@ -295,7 +295,7 @@ exports.main = async (event, context) => {
                             name: 'submit_ai_attack',
                             data: {
                                 plane_type: 1,
-                                data: [], // AI会生成自己的攻击数据
+                                mode: 2,
                                 room_id: room_id
                             }
                         })
