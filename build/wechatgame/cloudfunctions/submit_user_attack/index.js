@@ -41,8 +41,8 @@ exports.main = async (event, context) => {
         const room = roomResult.data
         const currentPlayerOpenid = wxContext.OPENID
         
-        // 检查房间模式，支持mode=1和mode=2
-        if (![1, 2].includes(room.mode)) {
+        // 检查房间模式，支持mode=1、mode=2和mode=3
+        if (![1, 2, 3].includes(room.mode)) {
             return {
                 success: false,
                 message: '不支持的房间模式',
@@ -55,6 +55,8 @@ exports.main = async (event, context) => {
             return await handleAIAttackMode(db, room, data, currentPlayerOpenid, room_id)
         } else if (room.mode === 2) {
             return await handlePlayerAttackMode(db, room, data, currentPlayerOpenid, room_id)
+        } else if (room.mode === 3) {
+            return await handleFriendInviteAttackMode(db, room, data, currentPlayerOpenid, room_id)
         }
         
     } catch (error) {
@@ -890,7 +892,7 @@ function hasAnyHit(chessBoard) {
 async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
     try {
         // 更新房间中指定玩家的指定道具状态
-        const roomResult = await db.collection('rooms').doc(roomId).get()
+        const roomResult = await db.collection('battle_rooms').doc(roomId).get()
         if (!roomResult.data) {
             console.error('房间不存在')
             return
@@ -913,7 +915,7 @@ async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
         }
         
         // 更新房间数据
-        await db.collection('rooms').doc(roomId).update({
+        await db.collection('battle_rooms').doc(roomId).update({
             data: {
                 players: players
             }
@@ -928,7 +930,7 @@ async function markItemAsUsed(db, roomId, playerOpenid, itemId) {
 async function addItem3ToPlayer(db, roomId, playerOpenid) {
     try {
         // 更新房间中指定玩家，添加item_id=3的道具
-        const roomResult = await db.collection('rooms').doc(roomId).get()
+        const roomResult = await db.collection('battle_rooms').doc(roomId).get()
         if (!roomResult.data) {
             console.error('房间不存在')
             return
@@ -954,7 +956,7 @@ async function addItem3ToPlayer(db, roomId, playerOpenid) {
         }
         
         // 更新房间数据
-        await db.collection('rooms').doc(roomId).update({
+        await db.collection('battle_rooms').doc(roomId).update({
             data: {
                 players: players
             }
@@ -969,7 +971,7 @@ async function addItem3ToPlayer(db, roomId, playerOpenid) {
 async function recordHeadDodgeEvent(db, roomId, playerOpenid) {
     try {
         // 在房间中记录机头闪避事件
-        await db.collection('rooms').doc(roomId).update({
+        await db.collection('battle_rooms').doc(roomId).update({
             data: {
                 head_dodge_events: db.command.push({
                     player_openid: playerOpenid,
@@ -1002,7 +1004,7 @@ async function checkOneHitKill(db, roomId, attackerOpenid, headSquare, group) {
         
         if (headType && bodySquares.length > 0) {
             // 检查对应的机身格子是否都是0（未被攻击过）
-            const roomResult = await db.collection('rooms').doc(roomId).get()
+            const roomResult = await db.collection('battle_rooms').doc(roomId).get()
             if (roomResult.data) {
                 const room = roomResult.data
                 const attackedPlayer = room.players.find(p => p.openid !== attackerOpenid)
@@ -1020,7 +1022,7 @@ async function checkOneHitKill(db, roomId, attackerOpenid, headSquare, group) {
                 
                 // 如果所有机身格子都是0，记录一击必杀事件
                 if (allBodySquaresUntouched) {
-                    await db.collection('rooms').doc(roomId).update({
+                    await db.collection('battle_rooms').doc(roomId).update({
                         data: {
                             one_hit_kill_events: db.command.push({
                                 attacker_openid: attackerOpenid,
@@ -1292,6 +1294,258 @@ async function handleAIAchievementsAndNewGifts(db, room, winner, currentPlayerOp
     }
 }
 
+// 处理好友邀请对战模式的攻击
+async function handleFriendInviteAttackMode(db, room, data, currentPlayerOpenid, room_id) {
+    try {
+        // 验证只有type=1的玩家可以参与好友邀请对战
+        const players = room.players || []
+        const currentPlayer = players.find(p => p.openid === currentPlayerOpenid)
+        if (!currentPlayer || currentPlayer.type !== '1') {
+            return {
+                success: false,
+                message: '好友邀请对战只允许真人玩家参与',
+                data: null
+            }
+        }
+        
+        // 检查格子状态
+        const chessBoard = room.chess_board || {}
+        const attackedSquares = data.map(item => item.square)
+        
+        // 检查是否有已被攻击的格子
+        for (const square of attackedSquares) {
+            const squareStatus = chessBoard[`chess_${square}`] || '0'
+            if (['1', '2', '3'].includes(squareStatus)) {
+                return {
+                    success: false,
+                    message: '已被攻击的格子不需要再次攻击',
+                    data: null
+                }
+            }
+        }
+        
+        // 检查item_id=3道具使用逻辑
+        if (attackedSquares.length >= 2) {
+            if (currentPlayer && currentPlayer.items) {
+                // 检查是否已经使用了item_id=3的道具
+                const hasItem3 = currentPlayer.items.some(item => item.item_id === '3')
+                if (hasItem3) {
+                    return {
+                        success: false,
+                        message: '一种科技在一句战斗中只能使用一次',
+                        data: null
+                    }
+                }
+                
+                // 如果没有使用过item_id=3，则添加该道具记录
+                await addItem3ToPlayer(db, room_id, currentPlayerOpenid)
+            }
+        }
+        
+        // 查询飞机组合信息
+        const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(room.group_id).get()
+        if (!groupResult.data) {
+            return {
+                success: false,
+                message: '飞机组合信息不存在',
+                data: null
+            }
+        }
+        
+        const group = groupResult.data
+        
+        // 解析机头格子
+        const headSquares = [
+            group.h_a,
+            group.h_b,
+            group.h_c
+        ].filter(Boolean)
+        
+        // 解析机身格子
+        const bodySquares = []
+        const bodyFields = [group.bs_a, group.bs_b, group.bs_c]
+        for (const field of bodyFields) {
+            if (field) {
+                const squares = field.split(',').map(s => s.trim()).filter(Boolean)
+                bodySquares.push(...squares)
+            }
+        }
+        
+        // 处理攻击逻辑（包含道具功能）
+        let hasHeadHit = false
+        const updatedChessBoard = { ...chessBoard }
+        
+        // 获取被攻击玩家的信息
+        const attackedPlayer = players.find(p => p.openid !== currentPlayerOpenid)
+        const attackerPlayer = players.find(p => p.openid === currentPlayerOpenid)
+        
+        // 检查是否是被攻击方首次被击中
+        let isFirstHit = false
+        let hasHitInThisAttack = false
+        const squaresToMarkAsHit = []
+        
+        // 先检查本次攻击是否有击中
+        for (const square of attackedSquares) {
+            const squareKey = `chess_${square}`
+            const currentStatus = updatedChessBoard[squareKey] || '0'
+            
+            if (currentStatus === '0') {
+                if (headSquares.includes(square.toString()) || bodySquares.includes(square.toString())) {
+                    hasHitInThisAttack = true
+                    squaresToMarkAsHit.push(square)
+                }
+            }
+        }
+        
+        // 检查是否是被攻击方首次被击中
+        if (hasHitInThisAttack && attackedPlayer) {
+            let hasAnyPreviousHit = false
+            for (let i = 1; i <= 144; i++) {
+                const squareKey = `chess_${i}`
+                const status = updatedChessBoard[squareKey] || '0'
+                if (status === '1' || status === '2') {
+                    hasAnyPreviousHit = true
+                    break
+                }
+            }
+            isFirstHit = !hasAnyPreviousHit
+        }
+        
+        // 检查是否攻击了已标记为9的格子
+        let hasAttackedMarkedNine = false
+        for (const square of attackedSquares) {
+            const squareKey = `chess_${square}`
+            const currentStatus = updatedChessBoard[squareKey] || '0'
+            if (currentStatus === '9') {
+                hasAttackedMarkedNine = true
+                break
+            }
+        }
+        
+        // 处理道具逻辑
+        let usedItem = false
+        if (attackedPlayer && attackedPlayer.items && hasHitInThisAttack && !hasAttackedMarkedNine) {
+            const availableItems = attackedPlayer.items.filter(item => item.item_status === '0')
+            const item1 = availableItems.find(item => item.item_id === '1')
+            const item2 = availableItems.find(item => item.item_id === '2')
+            
+            // 优先使用item_id=1的道具（首次被击中时）
+            if (isFirstHit && item1) {
+                usedItem = true
+                // 标记道具为已使用
+                await markItemAsUsed(db, room_id, attackedPlayer.openid, '1')
+                // 将所有应该被标记为1或2的格子标记为9
+                for (const square of squaresToMarkAsHit) {
+                    const squareKey = `chess_${square}`
+                    updatedChessBoard[squareKey] = '9'
+                }
+            } else if (item2) {
+                usedItem = true
+                // 标记道具为已使用
+                await markItemAsUsed(db, room_id, attackedPlayer.openid, '2')
+                // 将所有应该被标记为1或2的格子标记为9
+                for (const square of squaresToMarkAsHit) {
+                    const squareKey = `chess_${square}`
+                    updatedChessBoard[squareKey] = '9'
+                }
+            }
+        }
+        
+        // 如果没有使用道具，按正常逻辑处理攻击
+        if (!usedItem) {
+            for (const square of attackedSquares) {
+                const squareKey = `chess_${square}`
+                const currentStatus = updatedChessBoard[squareKey] || '0'
+                
+                // 如果之前是9（闪避），本次视为击中
+                if (currentStatus === '9') {
+                    if (headSquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '1'
+                        hasHeadHit = true
+                    } else if (bodySquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '2'
+                    }
+                } else {
+                    // 正常攻击
+                    if (headSquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '1'
+                        hasHeadHit = true
+                    } else if (bodySquares.includes(square.toString())) {
+                        updatedChessBoard[squareKey] = '2'
+                    } else {
+                        updatedChessBoard[squareKey] = '3' // 打空了
+                    }
+                }
+            }
+        }
+        
+        // 统计机头数量
+        let headCount = 0
+        for (let i = 1; i <= 144; i++) {
+            const squareKey = `chess_${i}`
+            if (updatedChessBoard[squareKey] === '1') {
+                headCount++
+            }
+        }
+        
+        // 判断胜负和更新游戏状态
+        const currentTime = Date.now()
+        let winner = null
+        let gameEnded = false
+        
+        if (headCount >= 3) {
+            // 游戏结束，当前玩家获胜
+            winner = currentPlayerOpenid
+            gameEnded = true
+        }
+        
+        // 更新房间状态
+        const updateData = {
+            chess_board: updatedChessBoard,
+            last_move_time: currentTime,
+            attack_num: db.command.inc(1)
+        }
+        
+        if (gameEnded) {
+            updateData.winner = winner
+            updateData.status = 'ended'
+        } else {
+            // 切换玩家
+            const currentPlayerIndex = players.findIndex(p => p.openid === currentPlayerOpenid)
+            const nextPlayerIndex = (currentPlayerIndex + 1) % players.length
+            const nextPlayer = players[nextPlayerIndex]
+            updateData.current_player = nextPlayer.openid
+        }
+        
+        await db.collection('battle_rooms').doc(room_id).update({
+            data: updateData
+        })
+        
+        // 处理好友邀请对战的成就和新人礼
+        if (gameEnded) {
+            await handleFriendInviteAchievementsAndNewGifts(db, room, winner, currentPlayerOpenid)
+        }
+        
+        return {
+            success: true,
+            message: gameEnded ? '游戏结束' : '攻击成功',
+            data: {
+                gameEnded,
+                winner,
+                headCount
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理好友邀请对战攻击时出错:', error)
+        return {
+            success: false,
+            message: '处理好友邀请对战攻击失败',
+            data: null
+        }
+    }
+}
+
 // 处理人机对战的新人礼
 async function handleAINewGifts(db, room, winner, winnerPlayer) {
     try {
@@ -1349,5 +1603,182 @@ async function handleAIAchievements(db, room, winner, winnerPlayer, difficulty) 
         
     } catch (error) {
         console.error('处理人机对战成就时出错:', error)
+    }
+}
+
+// 处理好友邀请对战的成就和新人礼
+async function handleFriendInviteAchievementsAndNewGifts(db, room, winner, currentPlayerOpenid) {
+    try {
+        const players = room.players || []
+        const winnerPlayer = players.find(p => p.openid === winner)
+        const firstPlayer = players.find(p => p.role === 'first')
+        const secondPlayer = players.find(p => p.role === 'second')
+        
+        // 1. 处理新人礼id=8：扫码邀请一名新用户对战
+        if (firstPlayer && secondPlayer) {
+            await handleFriendInviteNewGift(db, room, firstPlayer, secondPlayer)
+        }
+        
+        // 2. 处理成就id=59：扫码邀好友对战达到10次
+        if (firstPlayer) {
+            await handleFriendInviteAchievement(db, firstPlayer.openid)
+        }
+        
+    } catch (error) {
+        console.error('处理好友邀请对战的成就和新人礼时出错:', error)
+    }
+}
+
+// 处理好友邀请对战的新人礼
+async function handleFriendInviteNewGift(db, room, firstPlayer, secondPlayer) {
+    try {
+        // 检查role=first的玩家是否已经达成过这个新人礼
+        const userNewGiftResult = await db.collection('user_newgift')
+            .where({
+                user_id: firstPlayer.openid,
+                newgift_id: 8
+            })
+            .get()
+        
+        if (userNewGiftResult.data.length > 0) {
+            const userNewGift = userNewGiftResult.data[0]
+            if (userNewGift.is_achieved === 1) {
+                // 已经达成过，无需再计算
+                return
+            }
+        }
+        
+        // 获取role=second的玩家在user表中的ctime
+        const secondUserResult = await db.collection('user')
+            .where({
+                openid: secondPlayer.openid
+            })
+            .get()
+        
+        if (secondUserResult.data.length === 0) {
+            return
+        }
+        
+        const secondUserCtime = secondUserResult.data[0].ctime
+        const timeThreshold = secondUserCtime - 86400 // 24小时前
+        
+        // 查询role=second的玩家在battle_rooms表中的记录数量
+        const battleRoomsResult = await db.collection('battle_rooms')
+            .where({
+                ctime: db.command.gte(timeThreshold),
+                'players.openid': secondPlayer.openid
+            })
+            .get()
+        
+        // 如果只有1条记录，说明这是role=second的玩家的第一场战斗
+        if (battleRoomsResult.data.length === 1) {
+            // 标记role=first的玩家的新人礼为已达成
+            if (userNewGiftResult.data.length > 0) {
+                await db.collection('user_newgift').doc(userNewGiftResult.data[0]._id).update({
+                    data: {
+                        is_achieved: 1
+                    }
+                })
+            } else {
+                // 创建新记录
+                await db.collection('user_newgift').add({
+                    data: {
+                        user_id: firstPlayer.openid,
+                        newgift_id: 8,
+                        is_achieved: 1,
+                        is_collected: 0
+                    }
+                })
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理好友邀请对战新人礼时出错:', error)
+    }
+}
+
+// 处理好友邀请对战的成就
+async function handleFriendInviteAchievement(db, firstPlayerOpenid) {
+    try {
+        // 检查用户是否已经达成过这个成就
+        const userAchievementResult = await db.collection('user_achievement')
+            .where({
+                user_id: firstPlayerOpenid,
+                achievement_id: 59
+            })
+            .get()
+        
+        if (userAchievementResult.data.length > 0) {
+            const userAchievement = userAchievementResult.data[0]
+            if (userAchievement.is_achieved === 1) {
+                // 已经达成过，无需再计算
+                return
+            }
+        }
+        
+        // 查询role=first的玩家在历史所有mode=3的房间中，作为role=first且有role=second玩家的记录数量
+        const battleRoomsResult = await db.collection('battle_rooms')
+            .where({
+                mode: 3,
+                'players': db.command.elemMatch({
+                    role: 'first',
+                    openid: firstPlayerOpenid
+                })
+            })
+            .get()
+        
+        let validRoomCount = 0
+        
+        for (const room of battleRoomsResult.data) {
+            const players = room.players || []
+            const hasSecondPlayer = players.some(p => p.role === 'second')
+            if (hasSecondPlayer) {
+                validRoomCount++
+            }
+        }
+        
+        // 如果达到10次，标记成就为已达成
+        if (validRoomCount >= 10) {
+            if (userAchievementResult.data.length > 0) {
+                await db.collection('user_achievement').doc(userAchievementResult.data[0]._id).update({
+                    data: {
+                        is_achieved: 1
+                    }
+                })
+            } else {
+                // 创建新记录
+                await db.collection('user_achievement').add({
+                    data: {
+                        user_id: firstPlayerOpenid,
+                        achievement_id: 59,
+                        num: validRoomCount,
+                        is_achieved: 1,
+                        is_collected: 0
+                    }
+                })
+            }
+        } else {
+            // 更新或创建记录，但未达成
+            if (userAchievementResult.data.length > 0) {
+                await db.collection('user_achievement').doc(userAchievementResult.data[0]._id).update({
+                    data: {
+                        num: validRoomCount
+                    }
+                })
+            } else {
+                await db.collection('user_achievement').add({
+                    data: {
+                        user_id: firstPlayerOpenid,
+                        achievement_id: 59,
+                        num: validRoomCount,
+                        is_achieved: 0,
+                        is_collected: 0
+                    }
+                })
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理好友邀请对战成就时出错:', error)
     }
 }

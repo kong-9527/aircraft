@@ -43,11 +43,11 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 当前逻辑只支持mode=1和mode=2
-        if (mode === 3) {
+        // 当前逻辑支持mode=1、mode=2和mode=3
+        if (![1, 2, 3].includes(mode)) {
             return {
                 success: false,
-                message: '当前只支持mode=1和mode=2的游戏模式'
+                message: 'mode参数错误，必须是1、2或3'
             }
         }
         
@@ -141,6 +141,9 @@ exports.main = async (event, context) => {
         } else if (mode === 2) {
             // 人人对战模式
             return await handlePlayerMode(db, wxContext.OPENID, groupId, chessBoard, userType)
+        } else if (mode === 3) {
+            // 好友邀请对战模式
+            return await handleFriendInviteMode(db, wxContext.OPENID, groupId, chessBoard, userType)
         }
         
     } catch (error) {
@@ -707,5 +710,133 @@ async function joinExistingRoom(db, room, openId, groupId, chessBoard, userType,
             success: false,
             message: '加入房间失败'
         }
+    }
+}
+
+// 处理好友邀请对战模式
+async function handleFriendInviteMode(db, openId, groupId, chessBoard, userType) {
+    try {
+        // 验证只有type=1的玩家可以参与好友邀请对战
+        if (userType !== 1) {
+            return {
+                success: false,
+                message: '好友邀请对战只允许真人玩家参与'
+            }
+        }
+        
+        // 结束玩家之前的未完成房间
+        await endPreviousRooms(db, openId)
+        
+        // 创建好友邀请对战房间
+        const createResult = await createFriendInviteRoom(db, openId, groupId, chessBoard, userType)
+        
+        if (createResult.success) {
+            return {
+                success: true,
+                message: '好友邀请房间创建成功',
+                data: {
+                    room_code: createResult.room_code,
+                    group_id: groupId,
+                    room_id: createResult.room_id,
+                    status: 'waiting',
+                    invite_link: createResult.invite_link,
+                    invite_qrcode: createResult.invite_qrcode
+                }
+            }
+        } else {
+            return {
+                success: false,
+                message: createResult.message
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理好友邀请对战模式时出错:', error)
+        return {
+            success: false,
+            message: '创建好友邀请房间失败'
+        }
+    }
+}
+
+// 创建好友邀请对战房间
+async function createFriendInviteRoom(db, openId, groupId, chessBoard, userType) {
+    try {
+        const roomCode = await generateUniqueRoomCode(db)
+        const currentTime = Date.now()
+        
+        // 生成邀请链接和二维码
+        const inviteLink = `pages/battle/invite?room_code=${roomCode}`
+        const inviteQrcode = await generateInviteQRCode(roomCode)
+        
+        const roomData = {
+            room_code: roomCode,
+            plane_type: 1,
+            players: [
+                {
+                    openid: openId,
+                    role: "first",
+                    type: userType.toString(),
+                    group_id: groupId.toString(),
+                    chess_board: chessBoard
+                }
+            ],
+            status: 'waiting',
+            ctime: currentTime,
+            current_player: openId,
+            winner: '',
+            timeout: 0, // 不设置超时时间
+            last_move_time: currentTime,
+            mode: 3,
+            attack_num: 0,
+            invite_link: inviteLink,
+            invite_qrcode: inviteQrcode
+        }
+        
+        const result = await db.collection('battle_rooms').add({
+            data: roomData
+        })
+        
+        return {
+            success: true,
+            room_code: roomCode,
+            room_id: result._id,
+            invite_link: inviteLink,
+            invite_qrcode: inviteQrcode
+        }
+        
+    } catch (error) {
+        console.error('创建好友邀请对战房间时出错:', error)
+        return {
+            success: false,
+            message: '创建好友邀请对战房间失败'
+        }
+    }
+}
+
+// 生成邀请二维码
+async function generateInviteQRCode(roomCode) {
+    try {
+        // 使用微信小程序码生成API
+        const qrcodeResult = await cloud.openapi.wxacode.getUnlimited({
+            scene: roomCode,
+            page: 'pages/battle/invite',
+            width: 430,
+            isHyaline: false,
+            lineColor: { r: 0, g: 0, b: 0 },
+            autoColor: false
+        })
+        
+        // 将二维码上传到云存储
+        const uploadResult = await cloud.uploadFile({
+            cloudPath: `invite_qrcodes/${roomCode}.jpg`,
+            fileContent: qrcodeResult.buffer
+        })
+        
+        return uploadResult.fileID
+        
+    } catch (error) {
+        console.error('生成邀请二维码时出错:', error)
+        return null
     }
 }
