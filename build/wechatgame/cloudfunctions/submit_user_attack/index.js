@@ -29,7 +29,7 @@ exports.main = async (event, context) => {
         }
         
         // 2. 查询房间信息
-        const roomResult = await db.collection('rooms').doc(room_id).get()
+        const roomResult = await db.collection('battle_rooms').doc(room_id).get()
         if (!roomResult.data) {
             return {
                 success: false,
@@ -41,8 +41,8 @@ exports.main = async (event, context) => {
         const room = roomResult.data
         const currentPlayerOpenid = wxContext.OPENID
         
-        // 检查房间模式，只有mode=2时才执行当前逻辑
-        if (room.mode !== 2) {
+        // 检查房间模式，支持mode=1和mode=2
+        if (![1, 2].includes(room.mode)) {
             return {
                 success: false,
                 message: '不支持的房间模式',
@@ -50,7 +50,49 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 3. 检查格子状态
+        // 3. 根据mode进行不同的处理
+        if (room.mode === 1) {
+            return await handleAIAttackMode(db, room, data, currentPlayerOpenid, room_id)
+        } else if (room.mode === 2) {
+            return await handlePlayerAttackMode(db, room, data, currentPlayerOpenid, room_id)
+        }
+        
+    } catch (error) {
+        console.error('submit_user_attack 错误:', error)
+        return {
+            success: false,
+            message: '服务器错误',
+            data: null
+        }
+    }
+}
+
+// 处理人机对战模式的攻击
+async function handleAIAttackMode(db, room, data, currentPlayerOpenid, room_id) {
+    try {
+        // 检查格子数量，人机对战只能攻击1个格子
+        if (data.length > 1) {
+            return {
+                success: false,
+                message: '人机对战不可以使用道具',
+                data: null
+            }
+        }
+        
+        // 获取被攻击的玩家（AI玩家）
+        const players = room.players || []
+        const attackedPlayer = players.find(p => p.openid !== currentPlayerOpenid)
+        const attackerPlayer = players.find(p => p.openid === currentPlayerOpenid)
+        
+        if (!attackedPlayer || !attackerPlayer) {
+            return {
+                success: false,
+                message: '玩家信息错误',
+                data: null
+            }
+        }
+        
+        // 检查格子状态
         const chessBoard = room.chess_board || {}
         const attackedSquares = data.map(item => item.square)
         
@@ -66,26 +108,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 4. 检查item_id=3道具使用逻辑
-        if (attackedSquares.length >= 2) {
-            const currentPlayer = room.players.find(p => p.openid === currentPlayerOpenid)
-            if (currentPlayer && currentPlayer.items) {
-                // 检查是否已经使用了item_id=3的道具
-                const hasItem3 = currentPlayer.items.some(item => item.item_id === '3')
-                if (hasItem3) {
-                    return {
-                        success: false,
-                        message: '一种科技在一句战斗中只能使用一次',
-                        data: null
-                    }
-                }
-                
-                // 如果没有使用过item_id=3，则添加该道具记录
-                await addItem3ToPlayer(db, room_id, currentPlayerOpenid)
-            }
-        }
-        
-        // 5. 查询飞机组合信息
+        // 查询飞机组合信息
         const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(room.group_id).get()
         if (!groupResult.data) {
             return {
@@ -114,11 +137,184 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 6. 处理攻击逻辑（包含道具功能和奖励事件记录）
+        // 处理攻击逻辑（人机对战简化版）
+        let hasHeadHit = false
+        const updatedChessBoard = { ...chessBoard }
+        
+        // 直接处理攻击，不需要道具逻辑
+        for (const square of attackedSquares) {
+            const squareKey = `chess_${square}`
+            const currentStatus = updatedChessBoard[squareKey] || '0'
+            
+            if (currentStatus === '0') {
+                if (headSquares.includes(square.toString())) {
+                    updatedChessBoard[squareKey] = '1'
+                    hasHeadHit = true
+                } else if (bodySquares.includes(square.toString())) {
+                    updatedChessBoard[squareKey] = '2'
+                } else {
+                    updatedChessBoard[squareKey] = '3' // 打空了
+                }
+            }
+        }
+        
+        // 统计机头数量
+        let headCount = 0
+        for (let i = 1; i <= 144; i++) {
+            const squareKey = `chess_${i}`
+            if (updatedChessBoard[squareKey] === '1') {
+                headCount++
+            }
+        }
+        
+        // 判断胜负和更新游戏状态
+        const currentTime = Date.now()
+        let winner = null
+        let gameEnded = false
+        
+        if (headCount >= 3) {
+            // 游戏结束，当前玩家获胜
+            winner = currentPlayerOpenid
+            gameEnded = true
+        }
+        
+        // 更新房间状态
+        const updateData = {
+            chess_board: updatedChessBoard,
+            last_move_time: currentTime,
+            attack_num: db.command.inc(1)
+        }
+        
+        if (gameEnded) {
+            updateData.winner = winner
+            updateData.status = 'ended'
+        } else {
+            // 切换玩家（AI玩家）
+            const nextPlayer = players.find(p => p.openid !== currentPlayerOpenid)
+            updateData.current_player = nextPlayer.openid
+        }
+        
+        await db.collection('battle_rooms').doc(room_id).update({
+            data: updateData
+        })
+        
+        // 如果游戏未结束，直接调用AI攻击
+        if (!gameEnded) {
+            try {
+                await cloud.callFunction({
+                    name: 'submit_ai_attack',
+                    data: {
+                        plane_type: 1,
+                        mode: 1,
+                        room_id: room_id
+                    }
+                })
+            } catch (error) {
+                console.error('AI攻击调用失败:', error)
+            }
+        } else {
+            // 游戏结束，处理勋章奖励
+            // 只有真实玩家获胜时才给奖励，AI获胜时不给任何奖励
+            if (winner && attackerPlayer.type === 1) {
+                // 真实玩家获胜，给勋章奖励
+                await handleAIVictoryReward(db, room, winner)
+            }
+            // AI获胜时不做任何奖励处理
+        }
+        
+        return {
+            success: true,
+            message: gameEnded ? '游戏结束' : '攻击成功',
+            data: {
+                gameEnded,
+                winner,
+                headCount
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理人机对战攻击时出错:', error)
+        return {
+            success: false,
+            message: '处理人机对战攻击失败',
+            data: null
+        }
+    }
+}
+
+// 处理人人对战模式的攻击
+async function handlePlayerAttackMode(db, room, data, currentPlayerOpenid, room_id) {
+    try {
+        // 检查格子状态
+        const chessBoard = room.chess_board || {}
+        const attackedSquares = data.map(item => item.square)
+        
+        // 检查是否有已被攻击的格子
+        for (const square of attackedSquares) {
+            const squareStatus = chessBoard[`chess_${square}`] || '0'
+            if (['1', '2', '3'].includes(squareStatus)) {
+                return {
+                    success: false,
+                    message: '已被攻击的格子不需要再次攻击',
+                    data: null
+                }
+            }
+        }
+        
+        // 检查item_id=3道具使用逻辑
+        if (attackedSquares.length >= 2) {
+            const currentPlayer = room.players.find(p => p.openid === currentPlayerOpenid)
+            if (currentPlayer && currentPlayer.items) {
+                // 检查是否已经使用了item_id=3的道具
+                const hasItem3 = currentPlayer.items.some(item => item.item_id === '3')
+                if (hasItem3) {
+                    return {
+                        success: false,
+                        message: '一种科技在一句战斗中只能使用一次',
+                        data: null
+                    }
+                }
+                
+                // 如果没有使用过item_id=3，则添加该道具记录
+                await addItem3ToPlayer(db, room_id, currentPlayerOpenid)
+            }
+        }
+        
+        // 查询飞机组合信息
+        const groupResult = await db.collection('ai_basic_plane_groups_12x12_3').doc(room.group_id).get()
+        if (!groupResult.data) {
+            return {
+                success: false,
+                message: '飞机组合信息不存在',
+                data: null
+            }
+        }
+        
+        const group = groupResult.data
+        
+        // 解析机头格子
+        const headSquares = [
+            group.h_a,
+            group.h_b,
+            group.h_c
+        ].filter(Boolean)
+        
+        // 解析机身格子
+        const bodySquares = []
+        const bodyFields = [group.bs_a, group.bs_b, group.bs_c]
+        for (const field of bodyFields) {
+            if (field) {
+                const squares = field.split(',').map(s => s.trim()).filter(Boolean)
+                bodySquares.push(...squares)
+            }
+        }
+        
+        // 处理攻击逻辑（包含道具功能和奖励事件记录）
         let hasHeadHit = false
         const updatedChessBoard = { ...chessBoard }
         
         // 获取被攻击玩家的信息
+        const players = room.players || []
         const attackedPlayer = players.find(p => p.openid !== currentPlayerOpenid)
         const attackerPlayer = players.find(p => p.openid === currentPlayerOpenid)
         
@@ -240,7 +436,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 7. 统计机头数量
+        // 统计机头数量
         let headCount = 0
         for (let i = 1; i <= 144; i++) {
             const squareKey = `chess_${i}`
@@ -249,7 +445,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 8. 判断胜负和更新游戏状态
+        // 判断胜负和更新游戏状态
         const currentTime = Date.now()
         let winner = null
         let gameEnded = false
@@ -260,7 +456,7 @@ exports.main = async (event, context) => {
             gameEnded = true
         }
         
-        // 9. 更新房间状态
+        // 更新房间状态
         const updateData = {
             chess_board: updatedChessBoard,
             last_move_time: currentTime,
@@ -279,11 +475,11 @@ exports.main = async (event, context) => {
             updateData.current_player = nextPlayer.openid
         }
         
-        await db.collection('rooms').doc(room_id).update({
+        await db.collection('battle_rooms').doc(room_id).update({
             data: updateData
         })
         
-        // 10. 处理AI攻击
+        // 处理AI攻击
         if (!gameEnded) {
             const nextPlayer = room.players.find(p => p.openid === updateData.current_player)
             if (nextPlayer && nextPlayer.type === 2) {
@@ -307,7 +503,7 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 11. 结算奖励
+        // 结算奖励
         if (gameEnded && winner) {
             const winnerPlayer = room.players.find(p => p.openid === winner)
             const loserPlayer = room.players.find(p => p.openid !== winner)
@@ -321,10 +517,10 @@ exports.main = async (event, context) => {
                 })
             }
             
-            // 12. 计算额外奖励
+            // 计算额外奖励
             await calculateExtraRewards(db, room, winner, loserPlayer)
             
-            // 13. 计算用户成就
+            // 计算用户成就
             await calculateUserAchievements(db, room, winner, currentPlayerOpenid)
         }
         
@@ -339,12 +535,64 @@ exports.main = async (event, context) => {
         }
         
     } catch (error) {
-        console.error('submit_user_attack 错误:', error)
+        console.error('处理人人对战攻击时出错:', error)
         return {
             success: false,
-            message: '服务器错误',
+            message: '处理人人对战攻击失败',
             data: null
         }
+    }
+}
+
+// 处理AI胜利奖励（勋章奖励）
+async function handleAIVictoryReward(db, room, winner) {
+    try {
+        const difficulty = room.difficulty || 1
+        let medalReward = 0
+        
+        // 根据难度决定勋章奖励
+        switch (difficulty) {
+            case 1:
+                medalReward = 10
+                break
+            case 2:
+                medalReward = 20
+                break
+            case 3:
+                medalReward = 30
+                break
+            default:
+                medalReward = 10
+        }
+        
+        // 查找用户的item_id=7记录
+        const userItemResult = await db.collection('user_item').where({
+            openid: winner,
+            item_id: 7
+        }).get()
+        
+        if (userItemResult.data.length > 0) {
+            // 更新现有记录
+            await db.collection('user_item').doc(userItemResult.data[0]._id).update({
+                data: {
+                    item_num: db.command.inc(medalReward)
+                }
+            })
+        } else {
+            // 创建新记录
+            await db.collection('user_item').add({
+                data: {
+                    openid: winner,
+                    item_id: 7,
+                    item_num: medalReward
+                }
+            })
+        }
+        
+        console.log(`AI胜利奖励：用户${winner}获得${medalReward}勋章`)
+        
+    } catch (error) {
+        console.error('处理AI胜利奖励时出错:', error)
     }
 }
 
