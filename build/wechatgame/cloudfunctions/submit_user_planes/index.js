@@ -10,7 +10,7 @@ exports.main = async (event, context) => {
     
     try {
         // 获取参数
-        const { plane_type, data, mode } = event
+        const { plane_type, data, mode, difficulty } = event
         
         if (!plane_type || plane_type !== 1) {
             return {
@@ -33,11 +33,21 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 当前逻辑只支持mode=2
-        if (mode !== 2) {
+        // 当mode=1时，验证difficulty参数
+        if (mode === 1) {
+            if (!difficulty || ![1, 2, 3].includes(difficulty)) {
+                return {
+                    success: false,
+                    message: 'difficulty参数错误，必须是1、2或3'
+                }
+            }
+        }
+        
+        // 当前逻辑只支持mode=1和mode=2
+        if (mode === 3) {
             return {
                 success: false,
-                message: '当前只支持mode=2的游戏模式'
+                message: '当前只支持mode=1和mode=2的游戏模式'
             }
         }
         
@@ -124,9 +134,88 @@ exports.main = async (event, context) => {
         
         const userType = userResult.data.length > 0 ? userResult.data[0].type : 1 // 默认为1
         
+        // 根据mode进行不同的处理
+        if (mode === 1) {
+            // 人机对战模式
+            return await handleAIMode(db, wxContext.OPENID, groupId, chessBoard, difficulty, userType)
+        } else if (mode === 2) {
+            // 人人对战模式
+            return await handlePlayerMode(db, wxContext.OPENID, groupId, chessBoard, userType)
+        }
+        
+    } catch (error) {
+        console.error('submit_user_planes云函数执行错误:', error)
+        return {
+            success: false,
+            message: '系统异常，请稍后重试'
+        }
+    }
+}
+
+// 处理人机对战模式
+async function handleAIMode(db, openId, groupId, chessBoard, difficulty, userType) {
+    try {
+        // 结束玩家之前的未完成房间
+        await endPreviousRooms(db, openId)
+        
+        // 获取AI对手
+        const aiOpponent = await getAIOpponent(db)
+        if (!aiOpponent) {
+            return {
+                success: false,
+                message: '无法获取AI对手'
+            }
+        }
+        
+        // 随机选择AI飞机布局
+        const aiGroupId = await getRandomAIGroupId(db)
+        if (!aiGroupId) {
+            return {
+                success: false,
+                message: '无法获取AI飞机布局'
+            }
+        }
+        
+        // 生成AI的棋盘数据
+        const aiChessBoard = buildChessBoard()
+        
+        // 创建人机对战房间
+        const createResult = await createAIBattleRoom(db, openId, groupId, chessBoard, aiOpponent, aiGroupId, aiChessBoard, difficulty, userType)
+        
+        if (createResult.success) {
+            return {
+                success: true,
+                message: '人机对战房间创建成功',
+                data: {
+                    room_code: createResult.room_code,
+                    group_id: groupId,
+                    room_id: createResult.room_id,
+                    status: 'playing',
+                    difficulty: difficulty
+                }
+            }
+        } else {
+            return {
+                success: false,
+                message: createResult.message
+            }
+        }
+        
+    } catch (error) {
+        console.error('处理人机对战模式时出错:', error)
+        return {
+            success: false,
+            message: '创建人机对战房间失败'
+        }
+    }
+}
+
+// 处理人人对战模式
+async function handlePlayerMode(db, openId, groupId, chessBoard, userType) {
+    try {
         // 检查用户是否有item_id=1的道具
         const userItemResult = await db.collection('user_item').where({
-            openid: wxContext.OPENID,
+            openid: openId,
             item_id: 1
         }).get()
         
@@ -146,7 +235,7 @@ exports.main = async (event, context) => {
         
         if (existingRoom) {
             // 加入现有房间
-            const joinResult = await joinExistingRoom(db, existingRoom, wxContext.OPENID, groupId, chessBoard, userType, playerItems)
+            const joinResult = await joinExistingRoom(db, existingRoom, openId, groupId, chessBoard, userType, playerItems)
             
             if (joinResult.success) {
                 return {
@@ -155,7 +244,6 @@ exports.main = async (event, context) => {
                     data: {
                         room_code: existingRoom.room_code,
                         group_id: groupId,
-                        plane_nums: planeNums,
                         room_id: existingRoom._id,
                         status: 'playing'
                     }
@@ -168,7 +256,7 @@ exports.main = async (event, context) => {
             }
         } else {
             // 创建新房间
-            const createResult = await createNewRoom(db, wxContext.OPENID, groupId, chessBoard, mode, userType, playerItems)
+            const createResult = await createNewRoom(db, openId, groupId, chessBoard, 2, userType, playerItems)
             
             if (createResult.success) {
                 return {
@@ -177,7 +265,6 @@ exports.main = async (event, context) => {
                     data: {
                         room_code: createResult.room_code,
                         group_id: groupId,
-                        plane_nums: planeNums,
                         room_id: createResult.room_id,
                         status: 'waiting'
                     }
@@ -191,10 +278,121 @@ exports.main = async (event, context) => {
         }
         
     } catch (error) {
-        console.error('submit_user_planes云函数执行错误:', error)
+        console.error('处理人人对战模式时出错:', error)
         return {
             success: false,
-            message: '系统异常，请稍后重试'
+            message: '处理人人对战模式失败'
+        }
+    }
+}
+
+// 结束玩家之前的未完成房间
+async function endPreviousRooms(db, openId) {
+    try {
+        await db.collection('battle_rooms').where({
+            mode: 1,
+            'players.openid': openId,
+            status: db.command.neq('ended')
+        }).update({
+            data: {
+                status: 'ended'
+            }
+        })
+    } catch (error) {
+        console.error('结束玩家之前房间时出错:', error)
+    }
+}
+
+// 获取AI对手（type=9的用户）
+async function getAIOpponent(db) {
+    try {
+        const result = await db.collection('user').where({
+            type: 9
+        }).limit(1).get()
+        
+        if (result.data.length > 0) {
+            return result.data[0]
+        }
+        
+        return null
+    } catch (error) {
+        console.error('获取AI对手时出错:', error)
+        return null
+    }
+}
+
+// 随机选择AI飞机布局
+async function getRandomAIGroupId(db) {
+    try {
+        // 获取所有可用的group_id
+        const result = await db.collection('ai_basic_plane_groups_12x12_3').aggregate()
+            .sample({
+                size: 1
+            })
+            .end()
+        
+        if (result.list.length > 0) {
+            return result.list[0].id
+        }
+        
+        return null
+    } catch (error) {
+        console.error('随机选择AI飞机布局时出错:', error)
+        return null
+    }
+}
+
+// 创建人机对战房间
+async function createAIBattleRoom(db, openId, groupId, chessBoard, aiOpponent, aiGroupId, aiChessBoard, difficulty, userType) {
+    try {
+        const roomCode = await generateUniqueRoomCode(db)
+        const currentTime = Date.now()
+        
+        const roomData = {
+            room_code: roomCode,
+            plane_type: 1,
+            players: [
+                {
+                    openid: openId,
+                    role: "first",
+                    type: userType.toString(),
+                    group_id: groupId.toString(),
+                    chess_board: chessBoard
+                },
+                {
+                    openid: aiOpponent.openid,
+                    role: "second",
+                    type: "9",
+                    group_id: aiGroupId.toString(),
+                    chess_board: aiChessBoard
+                }
+            ],
+            status: 'playing',
+            ctime: currentTime,
+            current_player: openId,
+            winner: '',
+            timeout: 30,
+            last_move_time: currentTime,
+            mode: 1,
+            difficulty: difficulty,
+            attack_num: 0
+        }
+        
+        const result = await db.collection('battle_rooms').add({
+            data: roomData
+        })
+        
+        return {
+            success: true,
+            room_code: roomCode,
+            room_id: result._id
+        }
+        
+    } catch (error) {
+        console.error('创建人机对战房间时出错:', error)
+        return {
+            success: false,
+            message: '创建人机对战房间失败'
         }
     }
 }
