@@ -76,35 +76,85 @@ exports.main = async (event, context) => {
             }
         }
         
-        // 查找房间
-        const roomResult = await db.collection('battle_rooms').where({
+        // 查找房间 - 先查找waiting状态的房间
+        let roomResult = await db.collection('battle_rooms').where({
             room_code: room_code,
             mode: 3,
             status: 'waiting'
         }).get()
         
-        if (roomResult.data.length === 0) {
-            return {
-                success: false,
-                message: '房间不存在或已满'
+        let room = null
+        let isPlayingRoom = false
+        
+        if (roomResult.data.length === 1) {
+            // 找到waiting状态的房间，视为有效房间
+            room = roomResult.data[0]
+            
+            // 检查房间是否已经有2个玩家
+            if (room.players && room.players.length >= 2) {
+                return {
+                    success: false,
+                    message: '对战已满'
+                }
+            }
+            
+            // 检查玩家是否已经在房间中
+            if (room.players && room.players.some(player => player.openid === wxContext.OPENID)) {
+                return {
+                    success: false,
+                    message: '您已经在对战中'
+                }
+            }
+        } else if (roomResult.data.length === 0) {
+            // 没找到waiting状态的房间，查找playing状态的房间
+            roomResult = await db.collection('battle_rooms').where({
+                room_code: room_code,
+                mode: 3,
+                status: 'playing'
+            }).get()
+            
+            if (roomResult.data.length === 1) {
+                // 找到playing状态的房间
+                room = roomResult.data[0]
+                isPlayingRoom = true
+                
+                // 检查role=second的玩家是否是自己
+                const secondPlayer = room.players ? room.players.find(player => player.role === 'second') : null
+                
+                if (secondPlayer && secondPlayer.openid === wxContext.OPENID) {
+                    // 是自己，提示已在对战中，抛弃本次提交的数据
+                    return {
+                        success: true,
+                        message: '您已经在对战中',
+                        data: {
+                            room_code: room.room_code,
+                            group_id: secondPlayer.group_id,
+                            room_id: room._id,
+                            status: 'playing',
+                            is_existing_player: true
+                        }
+                    }
+                } else {
+                    // 不是自己，提示对战已满员
+                    return {
+                        success: false,
+                        message: '对战已满员'
+                    }
+                }
+            } else if (roomResult.data.length === 0) {
+                // 都没找到，提示对战已结束
+                return {
+                    success: false,
+                    message: '对战已结束'
+                }
             }
         }
         
-        const room = roomResult.data[0]
-        
-        // 检查房间是否已经有2个玩家
-        if (room.players && room.players.length >= 2) {
+        // 如果是playing状态的房间，不需要继续处理，因为已经在上面返回了
+        if (isPlayingRoom) {
             return {
                 success: false,
-                message: '房间已满'
-            }
-        }
-        
-        // 检查玩家是否已经在房间中
-        if (room.players && room.players.some(player => player.openid === wxContext.OPENID)) {
-            return {
-                success: false,
-                message: '您已经在房间中'
+                message: '对战已满员'
             }
         }
         
@@ -117,7 +167,7 @@ exports.main = async (event, context) => {
         if (userType !== 1) {
             return {
                 success: false,
-                message: '好友邀请对战只允许真人玩家参与'
+                message: '加入对战失败'
             }
         }
         
