@@ -220,6 +220,9 @@ async function handleAIAttackMode(db, room, data, currentPlayerOpenid, room_id) 
                 await handleAIVictoryReward(db, room, winner)
             }
             // AI获胜时不做任何奖励处理
+            
+            // 处理人机对战的成就和新人礼奖励
+            await handleAIAchievementsAndNewGifts(db, room, winner, currentPlayerOpenid)
         }
         
         return {
@@ -1268,5 +1271,83 @@ async function checkWin10GamesNewGift(db, winner) {
         }
     } catch (error) {
         console.error('检查获胜10局新人礼时出错:', error)
+    }
+}
+
+// 处理人机对战的成就和新人礼奖励
+async function handleAIAchievementsAndNewGifts(db, room, winner, currentPlayerOpenid) {
+    try {
+        const players = room.players || []
+        const winnerPlayer = players.find(p => p.openid === winner)
+        const difficulty = room.difficulty || 1
+        
+        // 1. 处理新人礼的达成情况
+        await handleAINewGifts(db, room, winner, winnerPlayer)
+        
+        // 2. 处理成就的达成情况
+        await handleAIAchievements(db, room, winner, winnerPlayer, difficulty)
+        
+    } catch (error) {
+        console.error('处理人机对战的成就和新人礼奖励时出错:', error)
+    }
+}
+
+// 处理人机对战的新人礼
+async function handleAINewGifts(db, room, winner, winnerPlayer) {
+    try {
+        // 只有真实玩家获胜时才处理新人礼
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            // 1. 完成首次人机挑战：id=3
+            await updateNewGift(db, winner, 3)
+            
+            // 2. 高难度人机挑战第一次获胜：id=4
+            const difficulty = room.difficulty || 1
+            if (difficulty === 3) {
+                await updateNewGift(db, winner, 4)
+            }
+        }
+    } catch (error) {
+        console.error('处理人机对战新人礼时出错:', error)
+    }
+}
+
+// 处理人机对战的成就
+async function handleAIAchievements(db, room, winner, winnerPlayer, difficulty) {
+    try {
+        // 只有真实玩家获胜时才处理成就
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            // 1. 人机挑战累积赢得勋章：achievement_id为20、21、22、23
+            let medalIncrement = 0
+            switch (difficulty) {
+                case 1:
+                    medalIncrement = 10
+                    break
+                case 2:
+                    medalIncrement = 20
+                    break
+                case 3:
+                    medalIncrement = 30
+                    break
+                default:
+                    medalIncrement = 10
+            }
+            await updateAchievement(db, winner, [20, 21, 22, 23], medalIncrement)
+        }
+        
+        // 2. 人机挑战地狱难度的次数：achievement_id为24、25、26
+        // 无论胜负，只要difficulty=3，真实玩家都计算
+        const realPlayer = room.players.find(p => p.type === 1)
+        if (realPlayer && difficulty === 3) {
+            await updateAchievement(db, realPlayer.openid, [24, 25, 26], 1)
+        }
+        
+        // 3. 人机挑战对战的次数：achievement_id为37、38、39
+        // 无论胜负，不限difficulty，真实玩家都计算
+        if (realPlayer) {
+            await updateAchievement(db, realPlayer.openid, [37, 38, 39], 1)
+        }
+        
+    } catch (error) {
+        console.error('处理人机对战成就时出错:', error)
     }
 }
