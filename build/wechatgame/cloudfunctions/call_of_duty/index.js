@@ -172,6 +172,14 @@ async function processCallOfDuty(db, roomId, currentOpenid) {
         
         await transaction.commit()
         
+        // 在AI用户成功加入房间后，插入battle_ai_decision记录
+        try {
+            await insertBattleAiDecision(db, roomId, aiUser.openid)
+        } catch (error) {
+            console.error('插入battle_ai_decision记录失败:', error)
+            // 不影响主要逻辑，继续返回成功
+        }
+        
         return {
             code: 200,
             message: "AI玩家匹配成功"
@@ -239,6 +247,48 @@ function generateChessBoard() {
     }
     
     return chessBoard
+}
+
+// 插入battle_ai_decision记录
+async function insertBattleAiDecision(db, roomId, aiOpenId) {
+    // 1. 查询ai_factor表获取权重值
+    const aiFactorResult = await db.collection('ai_factor').limit(1).get()
+    
+    if (!aiFactorResult.data || aiFactorResult.data.length === 0) {
+        throw new Error('未找到ai_factor数据')
+    }
+    
+    const aiFactor = aiFactorResult.data[0]
+    
+    // 2. 构建battle_ai_decision记录
+    const battleAiDecision = {
+        room_id: roomId,
+        mode: 2,
+        difficulty: 2,
+        ai_open_id: aiOpenId
+    }
+    
+    // 3. 添加weight_1到weight_144字段
+    for (let i = 1; i <= 144; i++) {
+        const factorKey = `factor_${i}`
+        const weightKey = `weight_${i}`
+        
+        if (aiFactor[factorKey] !== undefined) {
+            battleAiDecision[weightKey] = aiFactor[factorKey]
+        } else {
+            battleAiDecision[weightKey] = 0.0 // 默认值
+        }
+    }
+    
+    // 4. 插入到battle_ai_decision表
+    await db.collection('battle_ai_decision').add({
+        data: battleAiDecision
+    })
+    
+    console.log('成功插入battle_ai_decision记录:', {
+        room_id: roomId,
+        ai_open_id: aiOpenId
+    })
 }
 
 // 处理最终失败情况
