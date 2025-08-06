@@ -572,6 +572,9 @@ async function calculateUserAchievements(db, room, winner, currentPlayerOpenid) 
             }
         }
         
+        // 15. 计算新人礼成就
+        await calculateNewGiftAchievements(db, room, winner, currentPlayerOpenid)
+        
     } catch (error) {
         console.error('计算用户成就时出错:', error)
     }
@@ -1002,4 +1005,119 @@ function countPlayerEvents(events, playerOpenid) {
         }
         return false
     }).length
+}
+
+// 计算新人礼成就
+async function calculateNewGiftAchievements(db, room, winner, currentPlayerOpenid) {
+    try {
+        const players = room.players || []
+        const winnerPlayer = players.find(p => p.openid === winner)
+        const loserPlayer = players.find(p => p.openid !== winner)
+        
+        // 1. 参与一局1v1对战：仅对type=1的玩家做计算，对战双方都要计算
+        // 检查winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await updateNewGift(db, winner, 5)
+        }
+        
+        // 检查loser
+        if (loserPlayer && loserPlayer.type === 1) {
+            await updateNewGift(db, loserPlayer.openid, 5)
+        }
+        
+        // 2. 在1v1对战中获胜10局：仅对type=1的玩家做计算，只判断winner
+        if (winnerPlayer && winnerPlayer.type === 1) {
+            await checkWin10GamesNewGift(db, winner)
+        }
+        
+    } catch (error) {
+        console.error('计算新人礼成就时出错:', error)
+    }
+}
+
+// 更新新人礼状态
+async function updateNewGift(db, userId, newGiftId) {
+    try {
+        // 获取或创建用户新人礼记录
+        const userNewGiftResult = await db.collection('user_newgift')
+            .where({
+                user_id: userId,
+                newgift_id: newGiftId
+            })
+            .get()
+        
+        if (userNewGiftResult.data.length === 0) {
+            // 创建新记录
+            await db.collection('user_newgift').add({
+                data: {
+                    user_id: userId,
+                    newgift_id: newGiftId,
+                    is_achieved: 1,
+                    is_collected: 0
+                }
+            })
+        } else {
+            const userNewGift = userNewGiftResult.data[0]
+            // 如果is_achieved为0，则更新为1
+            if (userNewGift.is_achieved === 0) {
+                await db.collection('user_newgift').doc(userNewGift._id).update({
+                    data: {
+                        is_achieved: 1
+                    }
+                })
+            }
+        }
+    } catch (error) {
+        console.error('更新新人礼状态时出错:', error)
+    }
+}
+
+// 检查获胜10局新人礼
+async function checkWin10GamesNewGift(db, winner) {
+    try {
+        // 获取或创建用户新人礼记录
+        const userNewGiftResult = await db.collection('user_newgift')
+            .where({
+                user_id: winner,
+                newgift_id: 6
+            })
+            .get()
+        
+        if (userNewGiftResult.data.length === 0) {
+            // 创建新记录
+            await db.collection('user_newgift').add({
+                data: {
+                    user_id: winner,
+                    newgift_id: 6,
+                    is_achieved: 0,
+                    is_collected: 0
+                }
+            })
+        } else {
+            const userNewGift = userNewGiftResult.data[0]
+            // 如果is_achieved为1，则忽略本次处理
+            if (userNewGift.is_achieved === 1) {
+                return
+            }
+            
+            // 查询battle_rooms表中mode=2且winner是当前winner的记录数量
+            const battleRoomsResult = await db.collection('battle_rooms')
+                .where({
+                    mode: 2,
+                    winner: winner
+                })
+                .get()
+            
+            // 如果获胜记录>=10，则更新is_achieved为1
+            if (battleRoomsResult.data.length >= 10) {
+                await db.collection('user_newgift').doc(userNewGift._id).update({
+                    data: {
+                        is_achieved: 1
+                    }
+                })
+            }
+        }
+    } catch (error) {
+        console.error('检查获胜10局新人礼时出错:', error)
+    }
 }
