@@ -382,6 +382,9 @@ async function createAIBattleRoom(db, openId, groupId, chessBoard, aiOpponent, a
             data: roomData
         })
         
+        // 创建battle_ai_decision表记录
+        await createAIDecisionRecord(db, result._id, difficulty, aiOpponent.openid)
+        
         return {
             success: true,
             room_code: roomCode,
@@ -394,6 +397,55 @@ async function createAIBattleRoom(db, openId, groupId, chessBoard, aiOpponent, a
             success: false,
             message: '创建人机对战房间失败'
         }
+    }
+}
+
+// 创建AI决策记录
+async function createAIDecisionRecord(db, roomId, difficulty, aiOpenId) {
+    try {
+        // 从ai_factor表中获取factor_1~144的数据
+        const aiFactorResult = await db.collection('ai_factor').where({
+            difficulty: difficulty
+        }).get()
+        
+        if (aiFactorResult.data.length === 0) {
+            console.error('在ai_factor表中没有找到对应难度的数据')
+            return
+        }
+        
+        const aiFactor = aiFactorResult.data[0]
+        
+        // 构建weight_1~144的数据
+        const weightData = {}
+        for (let i = 1; i <= 144; i++) {
+            const factorKey = `factor_${i}`
+            if (aiFactor[factorKey] !== undefined) {
+                weightData[`weight_${i}`] = aiFactor[factorKey]
+            } else {
+                weightData[`weight_${i}`] = 0 // 默认值
+            }
+        }
+        
+        // 创建battle_ai_decision记录
+        const decisionData = {
+            room_id: roomId,
+            plane_type: 1,
+            mode: 1,
+            difficulty: difficulty,
+            ai_open_id: aiOpenId,
+            round: 0,
+            ...weightData
+        }
+        
+        await db.collection('battle_ai_decision').add({
+            data: decisionData
+        })
+        
+        console.log('成功创建AI决策记录，room_id:', roomId)
+        
+    } catch (error) {
+        console.error('创建AI决策记录时出错:', error)
+        // 不抛出错误，避免影响房间创建
     }
 }
 
