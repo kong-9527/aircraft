@@ -78,7 +78,7 @@ exports.main = async (event, context) => {
         }
         
         const checkinConfig = checkinResult.data[0]
-        const { reward_item_id, reward_item_num } = checkinConfig
+        const { reward_item_id, reward_item_num, month_id } = checkinConfig
         
         // 4. 检查用户是否已经领取过该日期的奖励
         const userCheckinResult = await db.collection('user_checkin')
@@ -188,6 +188,43 @@ exports.main = async (event, context) => {
             // 这里不返回错误，因为主要功能已经完成
         }
         
+        // 8. 检查是否需要计算满签成就
+        try {
+            // 获取当前月份信息
+            const monthInfoResult = await db.collection('basic_checkin_monthids')
+                .where({
+                    id: month_id
+                })
+                .get()
+            
+            if (monthInfoResult.data.length > 0) {
+                const monthInfo = monthInfoResult.data[0]
+                const endDate = new Date(monthInfo.end_date)
+                const endDateOnly = new Date(endDate)
+                endDateOnly.setHours(0, 0, 0, 0)
+                
+                // 计算倒数第二天
+                const secondLastDate = new Date(endDateOnly)
+                secondLastDate.setDate(secondLastDate.getDate() - 1)
+                
+                // 检查是否是本月最后一天或倒数第二天
+                if (submitDateOnly.getTime() === endDateOnly.getTime() || 
+                    submitDateOnly.getTime() === secondLastDate.getTime()) {
+                    
+                    // 检查本月是否满签
+                    const isFullCheckin = await checkFullCheckin(db, openid, month_id)
+                    
+                    if (isFullCheckin) {
+                        // 更新满签相关成就
+                        await updateFullCheckinAchievements(db, openid)
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('检查满签成就失败:', error)
+            // 这里不返回错误，因为主要功能已经完成
+        }
+        
         return {
             success: true,
             message: '签到奖励领取成功',
@@ -208,5 +245,131 @@ exports.main = async (event, context) => {
             message: '签到奖励领取失败: ' + error.message,
             error: error.message
         }
+    }
+}
+
+// 检查是否满签
+async function checkFullCheckin(db, openid, month_id) {
+    try {
+        // 获取该月份的所有签到配置
+        const checkinsResult = await db.collection('basic_checkins')
+            .where({
+                month_id: month_id
+            })
+            .get()
+        
+        if (checkinsResult.data.length === 0) {
+            return false
+        }
+        
+        // 获取用户在该月份的所有签到记录
+        const userCheckinsResult = await db.collection('user_checkin')
+            .where({
+                user_id: openid
+            })
+            .get()
+        
+        // 检查是否该月份的每一天都已签到
+        for (const checkin of checkinsResult.data) {
+            const hasCheckin = userCheckinsResult.data.find(userCheckin => 
+                userCheckin.checkin_id === checkin.id && userCheckin.is_achieved === 1
+            )
+            
+            if (!hasCheckin) {
+                return false
+            }
+        }
+        
+        return true
+    } catch (error) {
+        console.error('检查满签失败:', error)
+        return false
+    }
+}
+
+// 更新满签相关成就
+async function updateFullCheckinAchievements(db, openid) {
+    try {
+        const achievementIds = [60, 61, 62, 63]
+        
+        for (const achievementId of achievementIds) {
+            // 获取用户成就记录
+            const userAchievementResult = await db.collection('user_achievement')
+                .where({
+                    user_id: openid,
+                    achievement_id: achievementId
+                })
+                .get()
+            
+            if (userAchievementResult.data.length > 0) {
+                const userAchievement = userAchievementResult.data[0]
+                
+                // 如果已经达成，跳过
+                if (userAchievement.is_achieved === 1) {
+                    continue
+                }
+                
+                // 更新num值
+                const newNum = (userAchievement.num || 0) + 1
+                
+                // 获取成就配置
+                const basicAchievementResult = await db.collection('basic_achievements')
+                    .where({
+                        id: achievementId
+                    })
+                    .get()
+                
+                if (basicAchievementResult.data.length > 0) {
+                    const basicAchievement = basicAchievementResult.data[0]
+                    const needValue = basicAchievement.need || 0
+                    
+                    // 检查是否达成
+                    const isAchieved = newNum >= needValue ? 1 : 0
+                    
+                    // 更新用户成就记录
+                    await db.collection('user_achievement')
+                        .where({
+                            user_id: openid,
+                            achievement_id: achievementId
+                        })
+                        .update({
+                            data: {
+                                num: newNum,
+                                is_achieved: isAchieved
+                            }
+                        })
+                    
+                    console.log(`成就${achievementId}更新成功: num=${newNum}, is_achieved=${isAchieved}`)
+                }
+            } else {
+                // 创建新的用户成就记录
+                const basicAchievementResult = await db.collection('basic_achievements')
+                    .where({
+                        id: achievementId
+                    })
+                    .get()
+                
+                if (basicAchievementResult.data.length > 0) {
+                    const basicAchievement = basicAchievementResult.data[0]
+                    const needValue = basicAchievement.need || 0
+                    const isAchieved = 1 >= needValue ? 1 : 0
+                    
+                    await db.collection('user_achievement').add({
+                        data: {
+                            user_id: openid,
+                            achievement_id: achievementId,
+                            num: 1,
+                            is_achieved: isAchieved
+                        }
+                    })
+                    
+                    console.log(`成就${achievementId}创建成功: num=1, is_achieved=${isAchieved}`)
+                }
+            }
+        }
+        
+        console.log('满签成就更新完成')
+    } catch (error) {
+        console.error('更新满签成就失败:', error)
     }
 }
