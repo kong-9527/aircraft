@@ -147,6 +147,16 @@ exports.main = async (event, context) => {
         
         console.log('submit_item_order 成功记录日志:', logData)
         
+        // 新增：处理勋章购买道具的成就逻辑
+        if (type === 2 && currency === 2 && item_id >= 1 && item_id <= 4) {
+            try {
+                await updatePurchaseAchievements(db, wxContext.OPENID)
+            } catch (error) {
+                console.error('更新购买成就失败:', error)
+                // 这里不返回错误，因为主要功能已经完成
+            }
+        }
+        
         return {
             success: true,
             message: '操作记录成功',
@@ -161,5 +171,92 @@ exports.main = async (event, context) => {
             success: false,
             message: '操作失败：' + error.message
         }
+    }
+}
+
+// 更新购买道具相关成就
+async function updatePurchaseAchievements(db, openid) {
+    try {
+        const achievementIds = [43, 44, 45]
+        
+        for (const achievementId of achievementIds) {
+            // 获取用户成就记录
+            const userAchievementResult = await db.collection('user_achievement')
+                .where({
+                    user_id: openid,
+                    achievement_id: achievementId
+                })
+                .get()
+            
+            if (userAchievementResult.data.length > 0) {
+                const userAchievement = userAchievementResult.data[0]
+                
+                // 如果已经达成，跳过
+                if (userAchievement.is_achieved === 1) {
+                    continue
+                }
+                
+                // 更新num值
+                const newNum = (userAchievement.num || 0) + 1
+                
+                // 获取成就配置
+                const basicAchievementResult = await db.collection('basic_achievements')
+                    .where({
+                        id: achievementId
+                    })
+                    .get()
+                
+                if (basicAchievementResult.data.length > 0) {
+                    const basicAchievement = basicAchievementResult.data[0]
+                    const needValue = basicAchievement.need || 0
+                    
+                    // 检查是否达成
+                    const isAchieved = newNum >= needValue ? 1 : 0
+                    
+                    // 更新用户成就记录
+                    await db.collection('user_achievement')
+                        .where({
+                            user_id: openid,
+                            achievement_id: achievementId
+                        })
+                        .update({
+                            data: {
+                                num: newNum,
+                                is_achieved: isAchieved
+                            }
+                        })
+                    
+                    console.log(`购买成就${achievementId}更新成功: num=${newNum}, is_achieved=${isAchieved}`)
+                }
+            } else {
+                // 创建新的用户成就记录
+                const basicAchievementResult = await db.collection('basic_achievements')
+                    .where({
+                        id: achievementId
+                    })
+                    .get()
+                
+                if (basicAchievementResult.data.length > 0) {
+                    const basicAchievement = basicAchievementResult.data[0]
+                    const needValue = basicAchievement.need || 0
+                    const isAchieved = 1 >= needValue ? 1 : 0
+                    
+                    await db.collection('user_achievement').add({
+                        data: {
+                            user_id: openid,
+                            achievement_id: achievementId,
+                            num: 1,
+                            is_achieved: isAchieved
+                        }
+                    })
+                    
+                    console.log(`购买成就${achievementId}创建成功: num=1, is_achieved=${isAchieved}`)
+                }
+            }
+        }
+        
+        console.log('购买道具成就更新完成')
+    } catch (error) {
+        console.error('更新购买道具成就失败:', error)
     }
 }
