@@ -738,7 +738,7 @@ async function calculateUsedItemsReward(db, room) {
                 if (usedItemsCount > 0) {
                     await db.collection('users').doc(player.openid).update({
                         data: {
-                            score: db.command.inc(usedItemsCount * 10)
+                            score: db.command.inc(usedItemsCount * 20)
                         }
                     })
                 }
