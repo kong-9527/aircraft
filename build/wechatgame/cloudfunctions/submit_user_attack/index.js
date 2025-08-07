@@ -1103,8 +1103,38 @@ async function calculateExtraRewards(db, room, winner, loserPlayer) {
             }
         }
         
+        // 4. 使用道具奖励（双方type=1的玩家，每个已使用道具奖励10分）
+        await calculateUsedItemsReward(db, room)
+        
     } catch (error) {
         console.error('计算额外奖励时出错:', error)
+    }
+}
+
+// 计算使用道具奖励
+async function calculateUsedItemsReward(db, room) {
+    try {
+        const players = room.players || []
+        
+        // 遍历所有玩家
+        for (const player of players) {
+            // 只对type=1的玩家进行奖励
+            if (player.type === 1 && player.items && Array.isArray(player.items)) {
+                // 统计已使用的道具数量（item_status为'1'）
+                const usedItemsCount = player.items.filter(item => item.item_status === '1').length
+                
+                // 每个已使用道具奖励10分
+                if (usedItemsCount > 0) {
+                    await db.collection('users').doc(player.openid).update({
+                        data: {
+                            score: db.command.inc(usedItemsCount * 10)
+                        }
+                    })
+                }
+            }
+        }
+    } catch (error) {
+        console.error('计算使用道具奖励时出错:', error)
     }
 }
 
