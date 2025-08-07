@@ -283,6 +283,14 @@ exports.main = async (event, context) => {
             }
         }
         
+        // 8. 新增：检查新人礼达成情况
+        try {
+            await checkNewgiftCompletion(db, openid)
+        } catch (error) {
+            console.error('检查新人礼达成情况失败:', error)
+            // 这里不返回错误，因为主要功能已经完成
+        }
+        
         return {
             success: true,
             message: '新人礼奖励领取成功',
@@ -302,5 +310,70 @@ exports.main = async (event, context) => {
             message: '领取新人礼奖励失败: ' + error.message,
             error: error.message
         }
+    }
+}
+
+// 检查新人礼达成情况
+async function checkNewgiftCompletion(db, openid) {
+    try {
+        // 首先检查newgift_id=10的记录是否已经达成
+        const newgift10Result = await db.collection('user_newgift')
+            .where({
+                user_id: openid,
+                newgift_id: 10
+            })
+            .get()
+        
+        // 如果newgift_id=10已经达成，则不需要再检查
+        if (newgift10Result.data.length > 0 && newgift10Result.data[0].is_achieved === 1) {
+            console.log('新人礼总任务已完成，跳过检查')
+            return
+        }
+        
+        // 查询用户的所有新人礼记录（newgift_id 1-9）
+        const userNewgiftsResult = await db.collection('user_newgift')
+            .where({
+                user_id: openid,
+                newgift_id: db.command.in([1, 2, 3, 4, 5, 6, 7, 8, 9])
+            })
+            .get()
+        
+        // 检查是否所有9个任务都已完成
+        const completedTasks = userNewgiftsResult.data.filter(task => 
+            task.is_achieved === 1 && task.is_collected === 1
+        )
+        
+        if (completedTasks.length === 9) {
+            // 所有任务都已完成，更新newgift_id=10的记录
+            if (newgift10Result.data.length === 0) {
+                // 创建newgift_id=10的记录
+                await db.collection('user_newgift').add({
+                    data: {
+                        user_id: openid,
+                        newgift_id: 10,
+                        is_achieved: 1,
+                        is_collected: 0
+                    }
+                })
+                console.log('新人礼总任务达成，创建记录')
+            } else {
+                // 更新newgift_id=10的记录
+                await db.collection('user_newgift')
+                    .where({
+                        user_id: openid,
+                        newgift_id: 10
+                    })
+                    .update({
+                        data: {
+                            is_achieved: 1
+                        }
+                    })
+                console.log('新人礼总任务达成，更新记录')
+            }
+        } else {
+            console.log(`新人礼任务进度: ${completedTasks.length}/9`)
+        }
+    } catch (error) {
+        console.error('检查新人礼达成情况失败:', error)
     }
 }
