@@ -1,4 +1,6 @@
 
+import { _decorator, Component, sys } from 'cc';
+
 const { ccclass, property } = _decorator;
 
 /**
@@ -9,9 +11,13 @@ const { ccclass, property } = _decorator;
 export class WeChatAuthManager extends Component {
     
     private static instance: WeChatAuthManager = null!;
-    private isLoggedIn: boolean = false;
+    
+    // 授权状态
+    private privacyAgreed: boolean = false;  // 隐私协议是否同意
+    private hasOpenId: boolean = false;      // 是否已获取open_id
+    private hasUserProfile: boolean = false; // 是否已获取头像昵称
     private userInfo: any = null;
-    private loginPromise: Promise<any> | null = null;
+    private openId: string = '';
     
     // 微信小游戏API声明
     private wx: any = null;
@@ -26,6 +32,9 @@ export class WeChatAuthManager extends Component {
         
         // 初始化微信API
         this.initWeChatAPI();
+        
+        // 从本地存储恢复状态
+        this.restoreAuthStatus();
     }
     
     /**
@@ -40,8 +49,8 @@ export class WeChatAuthManager extends Component {
      */
     private initWeChatAPI() {
         // 检查是否在微信小游戏环境中
-        if (typeof wx !== 'undefined') {
-            this.wx = wx;
+        if (typeof (globalThis as any).wx !== 'undefined') {
+            this.wx = (globalThis as any).wx;
             console.log('微信小游戏环境检测成功');
         } else {
             console.warn('非微信小游戏环境，将使用模拟数据');
@@ -69,7 +78,7 @@ export class WeChatAuthManager extends Component {
                     options.success && options.success({
                         userInfo: {
                             nickName: '测试用户',
-                            avatarUrl: '',
+                            avatarUrl: 'https://example.com/avatar.jpg',
                             gender: 1,
                             country: 'China',
                             province: 'Guangdong',
@@ -106,7 +115,7 @@ export class WeChatAuthManager extends Component {
                                 id: 'mock_user_id',
                                 openId: 'mock_open_id',
                                 nickname: '测试用户',
-                                headUrl: '',
+                                headUrl: 'https://example.com/avatar.jpg',
                                 score: 100,
                                 medalNum: 5
                             }
@@ -118,10 +127,61 @@ export class WeChatAuthManager extends Component {
     }
     
     /**
-     * 检查用户是否已登录
+     * 从本地存储恢复授权状态
+     */
+    private restoreAuthStatus() {
+        try {
+            const authData = sys.localStorage.getItem('wechat_auth_status');
+            if (authData) {
+                const data = JSON.parse(authData);
+                this.privacyAgreed = data.privacyAgreed || false;
+                this.hasOpenId = data.hasOpenId || false;
+                this.hasUserProfile = data.hasUserProfile || false;
+                this.userInfo = data.userInfo || null;
+                this.openId = data.openId || '';
+                
+                console.log('从本地存储恢复授权状态:', {
+                    privacyAgreed: this.privacyAgreed,
+                    hasOpenId: this.hasOpenId,
+                    hasUserProfile: this.hasUserProfile
+                });
+            }
+        } catch (error) {
+            console.error('恢复授权状态失败:', error);
+        }
+    }
+    
+    /**
+     * 保存授权状态到本地存储
+     */
+    private saveAuthStatus() {
+        try {
+            const data = {
+                privacyAgreed: this.privacyAgreed,
+                hasOpenId: this.hasOpenId,
+                hasUserProfile: this.hasUserProfile,
+                userInfo: this.userInfo,
+                openId: this.openId,
+                timestamp: Date.now()
+            };
+            sys.localStorage.setItem('wechat_auth_status', JSON.stringify(data));
+        } catch (error) {
+            console.error('保存授权状态失败:', error);
+        }
+    }
+    
+    /**
+     * 检查用户是否已登录（隐私协议同意 + 有open_id）
      */
     public isUserLoggedIn(): boolean {
-        return this.isLoggedIn;
+        return this.privacyAgreed && this.hasOpenId;
+    }
+    
+    /**
+     * 检查用户是否已完成头像昵称授权
+     */
+    public hasUserProfileAuth(): boolean {
+        return this.hasUserProfile;
     }
     
     /**
@@ -132,108 +192,157 @@ export class WeChatAuthManager extends Component {
     }
     
     /**
-     * 检查用户授权状态
+     * 获取open_id
      */
-    public async checkAuthStatus(): Promise<boolean> {
-        try {
-            // 检查本地存储的登录状态
-            const loginData = this.getLocalLoginData();
-            if (loginData && loginData.isLoggedIn) {
-                this.isLoggedIn = true;
-                this.userInfo = loginData.userInfo;
-                console.log('从本地存储恢复登录状态');
-                return true;
-            }
-            
-            // 尝试静默登录
-            const loginResult = await this.silentLogin();
-            if (loginResult.success) {
-                this.isLoggedIn = true;
-                this.userInfo = loginResult.user;
-                this.saveLocalLoginData(loginResult);
-                console.log('静默登录成功');
-                return true;
-            }
-            
-            return false;
-        } catch (error) {
-            console.error('检查授权状态失败:', error);
-            return false;
-        }
+    public getOpenId(): string {
+        return this.openId;
     }
     
     /**
-     * 静默登录（不弹出授权框）
+     * 显示微信官方隐私协议弹窗
      */
-    private async silentLogin(): Promise<any> {
-        return new Promise((resolve, reject) => {
-            this.wx.login({
-                success: async (res: any) => {
-                    try {
-                        if (res.code) {
-                            // 调用云函数进行登录
-                            const loginResult = await this.callLoginCloudFunction(res.code);
-                            resolve(loginResult);
-                        } else {
-                            reject(new Error('微信登录失败: ' + res.errMsg));
-                        }
-                    } catch (error) {
-                        reject(error);
+    public async showPrivacyDialog(): Promise<boolean> {
+        return new Promise((resolve) => {
+            // 使用微信官方API显示隐私协议弹窗
+            this.wx.showModal({
+                title: '隐私协议',
+                content: '我们需要获取您的微信授权信息来提供更好的游戏体验。请阅读并同意我们的隐私协议。\n\n我们承诺：\n1. 仅获取必要的用户信息\n2. 严格保护用户隐私\n3. 不会泄露用户个人信息',
+                confirmText: '同意',
+                cancelText: '不同意',
+                success: (res: any) => {
+                    const agreed = res.confirm;
+                    if (agreed) {
+                        this.privacyAgreed = true;
+                        this.saveAuthStatus();
+                        console.log('用户同意隐私协议');
+                    } else {
+                        console.log('用户拒绝隐私协议');
                     }
+                    resolve(agreed);
                 },
                 fail: (error: any) => {
-                    reject(new Error('微信登录失败: ' + error.errMsg));
+                    console.error('显示隐私协议弹窗失败:', error);
+                    resolve(false);
                 }
             });
         });
     }
     
     /**
-     * 显示微信授权弹窗
+     * 静默登录获取open_id（必须在用户同意隐私协议后调用）
      */
-    public async showAuthDialog(): Promise<any> {
-        return new Promise((resolve, reject) => {
-            // 先进行微信登录
+    public async getOpenIdSilently(): Promise<{ success: boolean; openId?: string; error?: string }> {
+        if (!this.privacyAgreed) {
+            return {
+                success: false,
+                error: '用户未同意隐私协议'
+            };
+        }
+        
+        return new Promise((resolve) => {
             this.wx.login({
-                success: async (loginRes: any) => {
-                    if (loginRes.code) {
-                        try {
-                            // 获取用户信息
-                            this.wx.getUserProfile({
-                                desc: '用于完善用户资料',
-                                success: async (userRes: any) => {
-                                    try {
-                                        // 调用云函数进行登录
-                                        const loginResult = await this.callLoginCloudFunction(
-                                            loginRes.code, 
-                                            userRes.userInfo
-                                        );
-                                        
-                                        if (loginResult.success) {
-                                            this.isLoggedIn = true;
-                                            this.userInfo = loginResult.user;
-                                            this.saveLocalLoginData(loginResult);
-                                            resolve(loginResult);
-                                        } else {
-                                            reject(new Error('登录失败: ' + loginResult.error));
-                                        }
-                                    } catch (error) {
-                                        reject(error);
-                                    }
-                                },
-                                fail: (error: any) => {
-                                    reject(new Error('获取用户信息失败: ' + error.errMsg));
-                                }
+                success: async (res: any) => {
+                    try {
+                        if (res.code) {
+                            // 调用云函数进行登录获取open_id
+                            const loginResult = await this.callLoginCloudFunction(res.code);
+                            
+                            if (loginResult.success) {
+                                this.hasOpenId = true;
+                                this.openId = loginResult.openid;
+                                this.userInfo = loginResult.user;
+                                this.saveAuthStatus();
+                                
+                                console.log('静默登录成功，获取open_id:', this.openId);
+                                resolve({
+                                    success: true,
+                                    openId: this.openId
+                                });
+                            } else {
+                                resolve({
+                                    success: false,
+                                    error: loginResult.error || '登录失败'
+                                });
+                            }
+                        } else {
+                            resolve({
+                                success: false,
+                                error: '微信登录失败: ' + res.errMsg
                             });
-                        } catch (error) {
-                            reject(error);
                         }
-                    } else {
-                        reject(new Error('微信登录失败: ' + loginRes.errMsg));
+                    } catch (error) {
+                        resolve({
+                            success: false,
+                            error: '登录过程出错: ' + error
+                        });
                     }
                 },
                 fail: (error: any) => {
-                    reject(new Error('微信登录失败: ' + error.errMsg));
+                    resolve({
+                        success: false,
+                        error: '微信登录失败: ' + error.errMsg
+                    });
+                }
+            });
+        });
+    }
+    
+    /**
+     * 获取用户头像昵称授权
+     */
+    public async getUserProfileAuth(): Promise<{ success: boolean; userInfo?: any; error?: string }> {
+        if (!this.privacyAgreed) {
+            return {
+                success: false,
+                error: '用户未同意隐私协议'
+            };
+        }
+        
+        if (!this.hasOpenId) {
+            return {
+                success: false,
+                error: '未获取open_id，请先完成登录'
+            };
+        }
+        
+        return new Promise((resolve) => {
+            this.wx.getUserProfile({
+                desc: '用于完善用户资料和游戏体验',
+                success: async (res: any) => {
+                    try {
+                        const userInfo = res.userInfo;
+                        
+                        // 调用云函数更新用户信息
+                        const updateResult = await this.callUpdateUserInfoCloudFunction(userInfo);
+                        
+                        if (updateResult.success) {
+                            this.hasUserProfile = true;
+                            this.userInfo = updateResult.user;
+                            this.saveAuthStatus();
+                            
+                            console.log('获取用户头像昵称成功:', userInfo.nickName);
+                            resolve({
+                                success: true,
+                                userInfo: this.userInfo
+                            });
+                        } else {
+                            resolve({
+                                success: false,
+                                error: updateResult.error || '更新用户信息失败'
+                            });
+                        }
+                    } catch (error) {
+                        resolve({
+                            success: false,
+                            error: '获取用户信息失败: ' + error
+                        });
+                    }
+                },
+                fail: (error: any) => {
+                    resolve({
+                        success: false,
+                        error: '用户拒绝授权: ' + error.errMsg
+                    });
                 }
             });
         });
@@ -242,99 +351,132 @@ export class WeChatAuthManager extends Component {
     /**
      * 调用登录云函数
      */
-    private async callLoginCloudFunction(code: string, userInfo?: any): Promise<any> {
-        return new Promise((resolve, reject) => {
+    private async callLoginCloudFunction(code: string): Promise<any> {
+        return new Promise((resolve) => {
             this.wx.cloud.callFunction({
                 name: 'login',
                 data: {
-                    code: code,
-                    userInfo: userInfo
+                    code: code
                 },
                 success: (res: any) => {
-                    console.log('云函数调用成功:', res);
+                    console.log('登录云函数调用成功:', res);
                     resolve(res.result);
                 },
                 fail: (error: any) => {
-                    console.error('云函数调用失败:', error);
-                    reject(new Error('云函数调用失败: ' + error.errMsg));
+                    console.error('登录云函数调用失败:', error);
+                    resolve({
+                        success: false,
+                        error: '云函数调用失败: ' + error.errMsg
+                    });
                 }
             });
         });
     }
     
     /**
-     * 保存登录数据到本地存储
+     * 调用更新用户信息云函数
      */
-    private saveLocalLoginData(loginResult: any) {
-        try {
-            const data = {
-                isLoggedIn: true,
-                userInfo: loginResult.user,
-                timestamp: Date.now()
-            };
-            sys.localStorage.setItem('wechat_login_data', JSON.stringify(data));
-        } catch (error) {
-            console.error('保存登录数据失败:', error);
-        }
+    private async callUpdateUserInfoCloudFunction(userInfo: any): Promise<any> {
+        return new Promise((resolve) => {
+            this.wx.cloud.callFunction({
+                name: 'update_user_info',
+                data: {
+                    nickName: userInfo.nickName,
+                    avatarUrl: userInfo.avatarUrl
+                },
+                success: (res: any) => {
+                    console.log('更新用户信息云函数调用成功:', res);
+                    resolve(res.result);
+                },
+                fail: (error: any) => {
+                    console.error('更新用户信息云函数调用失败:', error);
+                    resolve({
+                        success: false,
+                        error: '云函数调用失败: ' + error.errMsg
+                    });
+                }
+            });
+        });
     }
     
     /**
-     * 从本地存储获取登录数据
+     * 检查并完成必要的授权流程
+     * @param requireUserProfile 是否需要头像昵称授权
      */
-    private getLocalLoginData(): any {
+    public async ensureAuthComplete(requireUserProfile: boolean = false): Promise<{ success: boolean; error?: string }> {
         try {
-            const data = sys.localStorage.getItem('wechat_login_data');
-            if (data) {
-                const loginData = JSON.parse(data);
-                // 检查数据是否过期（24小时）
-                if (Date.now() - loginData.timestamp < 24 * 60 * 60 * 1000) {
-                    return loginData;
+            // 1. 检查隐私协议
+            if (!this.privacyAgreed) {
+                const privacyResult = await this.showPrivacyDialog();
+                if (!privacyResult) {
+                    return {
+                        success: false,
+                        error: '需要同意隐私协议才能继续'
+                    };
                 }
             }
-        } catch (error) {
-            console.error('获取本地登录数据失败:', error);
-        }
-        return null;
-    }
-    
-    /**
-     * 清除本地登录数据
-     */
-    public clearLocalLoginData() {
-        try {
-            sys.localStorage.removeItem('wechat_login_data');
-            this.isLoggedIn = false;
-            this.userInfo = null;
-        } catch (error) {
-            console.error('清除登录数据失败:', error);
-        }
-    }
-    
-    /**
-     * 显示隐私协议弹窗
-     */
-    public async showPrivacyDialog(): Promise<boolean> {
-        return new Promise((resolve) => {
-            this.wx.showModal({
-                title: '隐私协议',
-                content: '我们需要获取您的微信授权信息来提供更好的游戏体验。请阅读并同意我们的隐私协议。',
-                confirmText: '同意',
-                cancelText: '不同意',
-                success: (res: any) => {
-                    resolve(res.confirm);
-                },
-                fail: () => {
-                    resolve(false);
+            
+            // 2. 检查open_id
+            if (!this.hasOpenId) {
+                const openIdResult = await this.getOpenIdSilently();
+                if (!openIdResult.success) {
+                    return {
+                        success: false,
+                        error: openIdResult.error || '获取用户标识失败'
+                    };
                 }
-            });
-        });
+            }
+            
+            // 3. 检查头像昵称授权（如果需要）
+            if (requireUserProfile && !this.hasUserProfile) {
+                const profileResult = await this.getUserProfileAuth();
+                if (!profileResult.success) {
+                    return {
+                        success: false,
+                        error: profileResult.error || '需要授权头像昵称才能继续'
+                    };
+                }
+            }
+            
+            return { success: true };
+            
+        } catch (error) {
+            return {
+                success: false,
+                error: '授权流程出错: ' + error
+            };
+        }
     }
     
     /**
-     * 登出
+     * 清除所有授权状态
      */
-    public logout() {
-        this.clearLocalLoginData();
-        console.log('用户已登出');
+    public clearAuthStatus() {
+        this.privacyAgreed = false;
+        this.hasOpenId = false;
+        this.hasUserProfile = false;
+        this.userInfo = null;
+        this.openId = '';
+        
+        try {
+            sys.localStorage.removeItem('wechat_auth_status');
+        } catch (error) {
+            console.error('清除授权状态失败:', error);
+        }
+        
+        console.log('已清除所有授权状态');
+    }
+    
+    /**
+     * 获取当前授权状态
+     */
+    public getAuthStatus() {
+        return {
+            privacyAgreed: this.privacyAgreed,
+            hasOpenId: this.hasOpenId,
+            hasUserProfile: this.hasUserProfile,
+            userInfo: this.userInfo,
+            openId: this.openId
+        };
     }
 } 
